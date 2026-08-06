@@ -1,0 +1,5 @@
+*.db
+*.sqlite
+dashboard.log
+__pycache__/
+*.py[cod]
