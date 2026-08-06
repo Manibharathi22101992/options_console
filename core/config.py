@@ -1,7 +1,6 @@
 import os
 import logging
 
-# Safely handle both Streamlit Cloud (st.secrets) and Local (.env) environments
 try:
     import streamlit as st
     CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", os.getenv("DHAN_CLIENT_ID"))
@@ -9,6 +8,12 @@ try:
 except ImportError:
     CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
     ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN")
+
+# --- STRICT VALIDATION ---
+if not CLIENT_ID:
+    raise RuntimeError("CRITICAL ERROR: DHAN_CLIENT_ID is missing from Configuration or Secrets.")
+if not ACCESS_TOKEN:
+    raise RuntimeError("CRITICAL ERROR: DHAN_ACCESS_TOKEN is missing from Configuration or Secrets.")
 
 NIFTY_ID = "13"
 
