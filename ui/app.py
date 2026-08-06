@@ -1,7 +1,6 @@
 import sys
 import os
 
-# Tell Python to look in the main folder for our other modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
@@ -12,40 +11,33 @@ from analytics.signals import analyze_market
 from ui.components import render_gauge_chart, render_oi_heatmap
 from core.database import init_db, save_signal
 
-# Configuration
 st.set_page_config(page_title="Pro NIFTY Options Dash", layout="wide", page_icon="📈")
 
-# Database Initialization
 if 'db_initialized' not in st.session_state:
     init_db()
     st.session_state.db_initialized = True
 
-# We renamed this function to "get_new_dhan_client" to force Streamlit 
-# to clear its memory and use our new v2.x Dhan API login fix!
+# Renamed cache function to force a hard reset in Streamlit
 @st.cache_resource
-def get_new_dhan_client():
+def get_latest_dhan_client():
     return DhanMarketData()
 
-client = get_new_dhan_client()
+client = get_latest_dhan_client()
 
-# --- Live Feed Toggle in Sidebar ---
 st.sidebar.title("Controls")
 live_feed = st.sidebar.toggle("🔴 Live Market Feed", value=True)
 if live_feed:
     st.sidebar.success("Live feed is ON (Updating every 3s)")
 else:
     st.sidebar.warning("Live feed is PAUSED")
-# ----------------------------------------
 
 st.title("⚡ NIFTY Pro Intraday Options Dashboard")
-
-# Placeholder for auto-refreshing dashboard
 placeholder = st.empty()
 
 with placeholder.container():
     ltp, oc_raw = client.get_live_option_chain()
     
-    if ltp is None or oc_raw is None:
+    if oc_raw is None:
         st.error("Waiting for Market Data... Ensure Market is open and API credentials in Secrets are correct.")
         st.stop()
         
@@ -55,7 +47,11 @@ with placeholder.container():
         st.warning("No option chain data available for this expiry.")
         st.stop()
         
-    # Filter 10 strikes above and below ATM
+    # SAFETY FALLBACK: If the API doesn't return the Spot Price, mathematically calculate the ATM strike using premiums
+    if ltp == 0:
+        atm_idx = (df['CE_LTP'] - df['PE_LTP']).abs().idxmin()
+        ltp = df.loc[atm_idx, 'Strike']
+        
     df_filtered = df[(df['Strike'] >= ltp - 500) & (df['Strike'] <= ltp + 500)]
     
     pcr = calculate_pcr(df_filtered)
@@ -98,7 +94,6 @@ with placeholder.container():
         atm_df = df_filtered.iloc[(df_filtered['Strike'] - ltp).abs().argsort()[:5]].sort_values('Strike')
         st.dataframe(atm_df[['Strike', 'CE_LTP', 'CE_Delta', 'CE_IV', 'PE_LTP', 'PE_Delta', 'PE_IV']], hide_index=True, use_container_width=True)
 
-# Only loop if the toggle is ON
 if live_feed:
     time.sleep(3)
     st.rerun()
