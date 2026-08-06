@@ -1,3 +1,9 @@
+import sys
+import os
+
+# Tell Python to look in the main folder for our other modules
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import streamlit as st
 import time
 from data.dhan_client import DhanMarketData
