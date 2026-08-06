@@ -28,10 +28,10 @@ if 'db_initialized' not in st.session_state:
     st.session_state.db_initialized = True
 
 @st.cache_resource
-def get_dhan_client_v6():
+def get_dhan_client_v7():
     return DhanMarketData()
 
-client = get_dhan_client_v6()
+client = get_dhan_client_v7()
 
 # --- PROFESSIONAL UI SIDEBAR ---
 st.sidebar.title("⚙️ Engine Controls")
@@ -75,7 +75,9 @@ with placeholder.container():
     
     overall_pcr, atm_pcr = calculate_advanced_pcr(df_filtered, ltp)
     max_pain = calculate_max_pain(df_filtered)
-    analysis = analyze_market(ltp, df_filtered, max_pain)
+    
+    # Run the new Institutional Signal Engine
+    analysis = analyze_market(ltp, df_filtered, max_pain, overall_pcr, atm_pcr)
     
     save_signal({
         "ltp": ltp, "pcr": overall_pcr, "max_pain": max_pain,
@@ -84,6 +86,7 @@ with placeholder.container():
         "recommendation": analysis['recommendation']
     })
 
+    # TOP CARDS
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("NIFTY Spot", f"₹{ltp:,.2f}")
     c2.metric("Overall PCR", f"{overall_pcr}", delta="Bullish" if overall_pcr > 1 else "Bearish")
@@ -93,15 +96,19 @@ with placeholder.container():
 
     st.markdown("---")
     
+    # GAUGES & INSTITUTIONAL SIGNAL OUTPUT
     c_g1, c_g2, c_sig = st.columns([1,1,2])
     with c_g1: st.plotly_chart(render_gauge_chart(analysis['confluence'], "Confluence Score"), use_container_width=True)
-    with c_g2: st.plotly_chart(render_gauge_chart(analysis['confidence'], "Confidence %"), use_container_width=True)
+    with c_g2: st.plotly_chart(render_gauge_chart(analysis['confidence'], "Conviction %"), use_container_width=True)
     with c_sig:
         color = "#00E676" if "CE" in analysis['recommendation'] else ("#FF3D00" if "PE" in analysis['recommendation'] else "#FFC107")
         st.markdown(f"""
-        <div style="padding: 20px; border-radius: 10px; background-color: #1E2130; border-left: 5px solid {color}; height: 100%;">
-            <h3 style="margin-top: 0; color: {color};">Signal: {analysis['recommendation']}</h3>
-            <p style="font-size: 1.1em;"><b>Reasoning:</b> {analysis['reason']}</p>
+        <div style="padding: 15px; border-radius: 10px; background-color: #1E2130; border-left: 5px solid {color}; height: 100%;">
+            <h3 style="margin-top: 0; color: {color};">{analysis['recommendation']}</h3>
+            <p style="margin-bottom: 5px; color: gray;"><b>Risk Profile:</b> {analysis['risk']}</p>
+            <div style="font-size: 0.95em; line-height: 1.6;">
+                {analysis['reason']}
+            </div>
         </div>
         """, unsafe_allow_html=True)
         
