@@ -68,6 +68,11 @@ class DhanMarketData:
         return None, None
 
     def process_oc_to_dataframe(self, oc_data):
+        # Inspect structure shape for debugging off-hours empty responses
+        logger.info(f"Type of oc_data: {type(oc_data)}")
+        if isinstance(oc_data, dict):
+            logger.info(f"Keys: {list(oc_data.keys())[:10]}")
+            
         if not oc_data or not isinstance(oc_data, dict): 
             return pd.DataFrame()
         
@@ -93,15 +98,16 @@ class DhanMarketData:
                 "PE_Delta": pe.get("greeks", {}).get("delta", 0) if isinstance(pe.get("greeks"), dict) else 0
             })
             
-        # GUARD: Prevent pandas sort crash if API returns an empty structure
-        if not rows:
+        df = pd.DataFrame(rows)
+        
+        # Rigorous dataframe validation guards
+        if df.empty:
+            logger.error("Option chain parsing produced an empty DataFrame.")
+            logger.error(f"Rows parsed: {len(rows)}")
             return pd.DataFrame()
             
-        df = pd.DataFrame(rows)
-        required_cols = ["Strike", "CE_OI", "PE_OI", "CE_LTP", "PE_LTP"]
-        for col in required_cols:
-            if col not in df.columns:
-                logger.error(f"FATAL: Missing required column {col} in API response")
-                return pd.DataFrame()
-                
-        return df.sort_values("Strike").reset_index(drop=True)
+        if "Strike" not in df.columns:
+            logger.error(f"Available columns: {list(df.columns)}")
+            return pd.DataFrame()
+            
+        return df.sort_values(by="Strike").reset_index(drop=True)
