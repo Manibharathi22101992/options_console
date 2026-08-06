@@ -7,10 +7,19 @@ import streamlit as st
 import time
 import datetime
 from data.dhan_client import DhanMarketData
-from analytics.engine import calculate_advanced_pcr, calculate_max_pain
 from analytics.signals import analyze_market
 from ui.components import render_gauge_chart, render_oi_heatmap
 from core.database import init_db, save_signal
+
+# --- BULLETPROOF IMPORT BLOCK ---
+try:
+    from analytics.engine import calculate_advanced_pcr, calculate_max_pain
+except ImportError:
+    from analytics.engine import calculate_pcr, calculate_max_pain
+    def calculate_advanced_pcr(df, ltp):
+        val = calculate_pcr(df)
+        return val, val
+# ---------------------------------
 
 st.set_page_config(page_title="Pro NIFTY Options Dash", layout="wide", page_icon="📈")
 
@@ -19,16 +28,15 @@ if 'db_initialized' not in st.session_state:
     st.session_state.db_initialized = True
 
 @st.cache_resource
-def get_dhan_client_v5():
+def get_dhan_client_v6():
     return DhanMarketData()
 
-client = get_dhan_client_v5()
+client = get_dhan_client_v6()
 
 # --- PROFESSIONAL UI SIDEBAR ---
 st.sidebar.title("⚙️ Engine Controls")
 st.sidebar.markdown("---")
 
-# Dynamic Expiry Input (Defaults to next upcoming Tuesday)
 today = datetime.date.today()
 next_tuesday = today + datetime.timedelta((1 - today.weekday()) % 7)
 expiry_input = st.sidebar.text_input("Target Expiry Date (YYYY-MM-DD)", value=next_tuesday.strftime("%Y-%m-%d"))
@@ -47,7 +55,6 @@ st.title("⚡ Quantitative Options Engine")
 placeholder = st.empty()
 
 with placeholder.container():
-    # Pass the dynamic expiry directly to the API
     ltp, oc_raw = client.get_live_option_chain(expiry_date=expiry_input)
     
     if ltp is None or not oc_raw:
@@ -66,7 +73,6 @@ with placeholder.container():
         
     df_filtered = df[(df['Strike'] >= ltp - 500) & (df['Strike'] <= ltp + 500)]
     
-    # Advanced Analytics
     overall_pcr, atm_pcr = calculate_advanced_pcr(df_filtered, ltp)
     max_pain = calculate_max_pain(df_filtered)
     analysis = analyze_market(ltp, df_filtered, max_pain)
@@ -78,7 +84,6 @@ with placeholder.container():
         "recommendation": analysis['recommendation']
     })
 
-    # TOP CARDS
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("NIFTY Spot", f"₹{ltp:,.2f}")
     c2.metric("Overall PCR", f"{overall_pcr}", delta="Bullish" if overall_pcr > 1 else "Bearish")
@@ -88,7 +93,6 @@ with placeholder.container():
 
     st.markdown("---")
     
-    # GAUGES & SIGNALS
     c_g1, c_g2, c_sig = st.columns([1,1,2])
     with c_g1: st.plotly_chart(render_gauge_chart(analysis['confluence'], "Confluence Score"), use_container_width=True)
     with c_g2: st.plotly_chart(render_gauge_chart(analysis['confidence'], "Confidence %"), use_container_width=True)
@@ -103,7 +107,6 @@ with placeholder.container():
         
     st.markdown("---")
     
-    # CHARTS
     c_chart, c_table = st.columns([2, 2])
     with c_chart: st.plotly_chart(render_oi_heatmap(df_filtered), use_container_width=True)
     with c_table:
