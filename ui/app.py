@@ -1,90 +1,98 @@
 import sys
 import os
 
-# Tell Python to look in the main folder for our other modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
 import time
+import datetime
 from data.dhan_client import DhanMarketData
-from analytics.engine import calculate_pcr, calculate_max_pain
+from analytics.engine import calculate_advanced_pcr, calculate_max_pain
 from analytics.signals import analyze_market
 from ui.components import render_gauge_chart, render_oi_heatmap
 from core.database import init_db, save_signal
 
-# Configuration
 st.set_page_config(page_title="Pro NIFTY Options Dash", layout="wide", page_icon="📈")
 
-# Database Initialization
 if 'db_initialized' not in st.session_state:
     init_db()
     st.session_state.db_initialized = True
 
 @st.cache_resource
-def get_dhan_client_final_prod():
+def get_dhan_client_v5():
     return DhanMarketData()
 
-client = get_dhan_client_final_prod()
+client = get_dhan_client_v5()
 
-# --- Live Feed Toggle in Sidebar ---
-st.sidebar.title("Controls")
-live_feed = st.sidebar.toggle("🔴 Live Market Feed", value=True)
+# --- PROFESSIONAL UI SIDEBAR ---
+st.sidebar.title("⚙️ Engine Controls")
+st.sidebar.markdown("---")
+
+# Dynamic Expiry Input (Defaults to next upcoming Tuesday)
+today = datetime.date.today()
+next_tuesday = today + datetime.timedelta((1 - today.weekday()) % 7)
+expiry_input = st.sidebar.text_input("Target Expiry Date (YYYY-MM-DD)", value=next_tuesday.strftime("%Y-%m-%d"))
+
+st.sidebar.markdown("---")
+live_feed = st.sidebar.toggle("🔴 Auto-Refresh Feed", value=True)
+refresh_rate = st.sidebar.slider("Refresh Speed (Seconds)", min_value=3, max_value=60, value=5)
+
 if live_feed:
-    st.sidebar.success("Live feed is ON (Updating every 3s)")
+    st.sidebar.success(f"Live feed ON ({refresh_rate}s delays)")
 else:
-    st.sidebar.warning("Live feed is PAUSED")
-# ----------------------------------------
+    st.sidebar.warning("Live feed PAUSED")
 
-st.title("⚡ NIFTY Pro Intraday Options Dashboard")
-
-# Placeholder for auto-refreshing dashboard
+# --- DASHBOARD UI ---
+st.title("⚡ Quantitative Options Engine")
 placeholder = st.empty()
 
 with placeholder.container():
-    ltp, oc_raw = client.get_live_option_chain()
+    # Pass the dynamic expiry directly to the API
+    ltp, oc_raw = client.get_live_option_chain(expiry_date=expiry_input)
     
-    # STRICT PRODUCTION MODE: If Dhan returns no data, halt and wait.
-    if ltp is None or oc_raw is None or not oc_raw:
-        st.error("Waiting for real Market Data... (The market is currently closed or Dhan API is in after-hours maintenance).")
+    if ltp is None or not oc_raw:
+        st.error(f"Waiting for Data... Ensure Market is open and {expiry_input} is a valid NIFTY expiry.")
         st.stop()
         
     df = client.process_oc_to_dataframe(oc_raw)
     
     if df.empty:
-        st.warning("No option chain data available for this expiry.")
+        st.warning("Data Validation Failed or Empty Chain.")
         st.stop()
         
-    # SAFETY FALLBACK: If API doesn't return spot price, calculate ATM
     if ltp == 0:
         atm_idx = (df['CE_LTP'] - df['PE_LTP']).abs().idxmin()
         ltp = df.loc[atm_idx, 'Strike']
         
-    # Filter 10 strikes above and below ATM
     df_filtered = df[(df['Strike'] >= ltp - 500) & (df['Strike'] <= ltp + 500)]
     
-    pcr = calculate_pcr(df_filtered)
+    # Advanced Analytics
+    overall_pcr, atm_pcr = calculate_advanced_pcr(df_filtered, ltp)
     max_pain = calculate_max_pain(df_filtered)
     analysis = analyze_market(ltp, df_filtered, max_pain)
     
     save_signal({
-        "ltp": ltp, "pcr": pcr, "max_pain": max_pain,
+        "ltp": ltp, "pcr": overall_pcr, "max_pain": max_pain,
         "regime": analysis['regime'],
         "confluence_score": analysis['confluence'],
         "recommendation": analysis['recommendation']
     })
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("NIFTY Spot", f"₹{ltp:,.2f}")
-    col2.metric("PCR", f"{pcr}", delta="Bullish" if pcr > 1 else "Bearish", delta_color="normal")
-    col3.metric("Max Pain", f"₹{max_pain:,.0f}")
-    col4.metric("Market Regime", analysis['regime'])
+    # TOP CARDS
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("NIFTY Spot", f"₹{ltp:,.2f}")
+    c2.metric("Overall PCR", f"{overall_pcr}", delta="Bullish" if overall_pcr > 1 else "Bearish")
+    c3.metric("ATM PCR (5-Strike)", f"{atm_pcr}", delta="Momentum Bullish" if atm_pcr > overall_pcr else "Momentum Bearish")
+    c4.metric("Max Pain", f"₹{max_pain:,.0f}")
+    c5.metric("Market Regime", analysis['regime'])
 
     st.markdown("---")
     
-    c1, c2, c3 = st.columns([1,1,2])
-    with c1: st.plotly_chart(render_gauge_chart(analysis['confluence'], "Confluence Score"), use_container_width=True)
-    with c2: st.plotly_chart(render_gauge_chart(analysis['confidence'], "Confidence %"), use_container_width=True)
-    with c3:
+    # GAUGES & SIGNALS
+    c_g1, c_g2, c_sig = st.columns([1,1,2])
+    with c_g1: st.plotly_chart(render_gauge_chart(analysis['confluence'], "Confluence Score"), use_container_width=True)
+    with c_g2: st.plotly_chart(render_gauge_chart(analysis['confidence'], "Confidence %"), use_container_width=True)
+    with c_sig:
         color = "#00E676" if "CE" in analysis['recommendation'] else ("#FF3D00" if "PE" in analysis['recommendation'] else "#FFC107")
         st.markdown(f"""
         <div style="padding: 20px; border-radius: 10px; background-color: #1E2130; border-left: 5px solid {color}; height: 100%;">
@@ -95,6 +103,7 @@ with placeholder.container():
         
     st.markdown("---")
     
+    # CHARTS
     c_chart, c_table = st.columns([2, 2])
     with c_chart: st.plotly_chart(render_oi_heatmap(df_filtered), use_container_width=True)
     with c_table:
@@ -102,7 +111,6 @@ with placeholder.container():
         atm_df = df_filtered.iloc[(df_filtered['Strike'] - ltp).abs().argsort()[:5]].sort_values('Strike')
         st.dataframe(atm_df[['Strike', 'CE_LTP', 'CE_Delta', 'CE_IV', 'PE_LTP', 'PE_Delta', 'PE_IV']], hide_index=True, use_container_width=True)
 
-# Only loop if the toggle is ON
 if live_feed:
-    time.sleep(3)
+    time.sleep(refresh_rate)
     st.rerun()
