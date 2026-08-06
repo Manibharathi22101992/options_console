@@ -58,13 +58,14 @@ with placeholder.container():
     ltp, oc_raw = client.get_live_option_chain(expiry_date=expiry_input)
     
     if ltp is None or not oc_raw:
-        st.error(f"Waiting for Data... Ensure Market is open and {expiry_input} is a valid NIFTY expiry.")
+        st.error(f"Waiting for Data... Market closed or {expiry_input} not available.")
         st.stop()
         
     df = client.process_oc_to_dataframe(oc_raw)
     
+    # UI Protection Guard
     if df.empty:
-        st.warning("Data Validation Failed or Empty Chain.")
+        st.error("No option chain data available or structure mismatch during closed hours.")
         st.stop()
         
     if ltp == 0:
@@ -76,7 +77,6 @@ with placeholder.container():
     overall_pcr, atm_pcr = calculate_advanced_pcr(df_filtered, ltp)
     max_pain = calculate_max_pain(df_filtered)
     
-    # Run the new Institutional Signal Engine
     analysis = analyze_market(ltp, df_filtered, max_pain, overall_pcr, atm_pcr)
     
     save_signal({
@@ -96,7 +96,6 @@ with placeholder.container():
 
     st.markdown("---")
     
-    # GAUGES & INSTITUTIONAL SIGNAL OUTPUT
     c_g1, c_g2, c_sig = st.columns([1,1,2])
     with c_g1: st.plotly_chart(render_gauge_chart(analysis['confluence'], "Confluence Score"), use_container_width=True)
     with c_g2: st.plotly_chart(render_gauge_chart(analysis['confidence'], "Conviction %"), use_container_width=True)
