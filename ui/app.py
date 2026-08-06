@@ -19,10 +19,10 @@ if 'db_initialized' not in st.session_state:
 
 # Renamed cache function to force a hard reset in Streamlit
 @st.cache_resource
-def get_latest_dhan_client():
+def get_dhan_client_final_v3():
     return DhanMarketData()
 
-client = get_latest_dhan_client()
+client = get_dhan_client_final_v3()
 
 st.sidebar.title("Controls")
 live_feed = st.sidebar.toggle("🔴 Live Market Feed", value=True)
