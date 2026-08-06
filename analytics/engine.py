@@ -1,123 +1,50 @@
-import sys
-import os
+import pandas as pd
+import numpy as np
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+def calculate_pcr(df: pd.DataFrame):
+    """Standard Overall PCR for backward compatibility"""
+    if df.empty or "CE_OI" not in df.columns or "PE_OI" not in df.columns:
+        return 1.0
+    total_ce_oi = df["CE_OI"].sum()
+    total_pe_oi = df["PE_OI"].sum()
+    return round(total_pe_oi / total_ce_oi, 2) if total_ce_oi > 0 else 1.0
 
-import streamlit as st
-import time
-import datetime
-from data.dhan_client import DhanMarketData
-from analytics.signals import analyze_market
-from ui.components import render_gauge_chart, render_oi_heatmap
-from core.database import init_db, save_signal
-
-# --- BULLETPROOF IMPORT BLOCK ---
-# This safely handles Streamlit if it gets stuck on older versions of your files
-try:
-    from analytics.engine import calculate_advanced_pcr, calculate_max_pain
-except ImportError:
-    from analytics.engine import calculate_pcr, calculate_max_pain
-    def calculate_advanced_pcr(df, ltp):
-        # Fallback if the advanced function hasn't synced from GitHub yet
-        val = calculate_pcr(df)
-        return val, val
-# ---------------------------------
-
-st.set_page_config(page_title="Pro NIFTY Options Dash", layout="wide", page_icon="📈")
-
-if 'db_initialized' not in st.session_state:
-    init_db()
-    st.session_state.db_initialized = True
-
-@st.cache_resource
-def get_dhan_client_v6():
-    return DhanMarketData()
-
-client = get_dhan_client_v6()
-
-# --- PROFESSIONAL UI SIDEBAR ---
-st.sidebar.title("⚙️ Engine Controls")
-st.sidebar.markdown("---")
-
-# Dynamic Expiry Input (Defaults to next upcoming Tuesday)
-today = datetime.date.today()
-next_tuesday = today + datetime.timedelta((1 - today.weekday()) % 7)
-expiry_input = st.sidebar.text_input("Target Expiry Date (YYYY-MM-DD)", value=next_tuesday.strftime("%Y-%m-%d"))
-
-st.sidebar.markdown("---")
-live_feed = st.sidebar.toggle("🔴 Auto-Refresh Feed", value=True)
-refresh_rate = st.sidebar.slider("Refresh Speed (Seconds)", min_value=3, max_value=60, value=5)
-
-if live_feed:
-    st.sidebar.success(f"Live feed ON ({refresh_rate}s delays)")
-else:
-    st.sidebar.warning("Live feed PAUSED")
-
-# --- DASHBOARD UI ---
-st.title("⚡ Quantitative Options Engine")
-placeholder = st.empty()
-
-with placeholder.container():
-    ltp, oc_raw = client.get_live_option_chain(expiry_date=expiry_input)
-    
-    if ltp is None or not oc_raw:
-        st.error(f"Waiting for Data... Ensure Market is open and {expiry_input} is a valid NIFTY expiry.")
-        st.stop()
+def calculate_advanced_pcr(df: pd.DataFrame, ltp: float):
+    """Calculates both Overall PCR and 5-Strike ATM PCR"""
+    if df.empty or "CE_OI" not in df.columns or "PE_OI" not in df.columns or df["CE_OI"].sum() == 0:
+        return 1.0, 1.0
         
-    df = client.process_oc_to_dataframe(oc_raw)
+    # 1. Overall PCR
+    overall_pcr = round(df["PE_OI"].sum() / df["CE_OI"].sum(), 2)
     
-    if df.empty:
-        st.warning("Data Validation Failed or Empty Chain.")
-        st.stop()
-        
-    if ltp == 0:
-        atm_idx = (df['CE_LTP'] - df['PE_LTP']).abs().idxmin()
-        ltp = df.loc[atm_idx, 'Strike']
-        
-    df_filtered = df[(df['Strike'] >= ltp - 500) & (df['Strike'] <= ltp + 500)]
+    # 2. ATM PCR (Closest 5 strikes)
+    if "Strike" in df.columns and ltp > 0:
+        atm_df = df.iloc[(df['Strike'] - ltp).abs().argsort()[:5]]
+        atm_ce_oi = atm_df["CE_OI"].sum()
+        atm_pcr = round(atm_df["PE_OI"].sum() / atm_ce_oi, 2) if atm_ce_oi > 0 else 1.0
+    else:
+        atm_pcr = overall_pcr
     
-    overall_pcr, atm_pcr = calculate_advanced_pcr(df_filtered, ltp)
-    max_pain = calculate_max_pain(df_filtered)
-    analysis = analyze_market(ltp, df_filtered, max_pain)
-    
-    save_signal({
-        "ltp": ltp, "pcr": overall_pcr, "max_pain": max_pain,
-        "regime": analysis['regime'],
-        "confluence_score": analysis['confluence'],
-        "recommendation": analysis['recommendation']
-    })
+    return overall_pcr, atm_pcr
 
-    # TOP CARDS
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("NIFTY Spot", f"₹{ltp:,.2f}")
-    c2.metric("Overall PCR", f"{overall_pcr}", delta="Bullish" if overall_pcr > 1 else "Bearish")
-    c3.metric("ATM PCR (5-Strike)", f"{atm_pcr}", delta="Momentum Bullish" if atm_pcr > overall_pcr else "Momentum Bearish")
-    c4.metric("Max Pain", f"₹{max_pain:,.0f}")
-    c5.metric("Market Regime", analysis['regime'])
-
-    st.markdown("---")
+def calculate_max_pain(df: pd.DataFrame):
+    """Optimized Vectorized Max Pain Calculation"""
+    if df.empty or "Strike" not in df.columns or "CE_OI" not in df.columns or "PE_OI" not in df.columns:
+        return 0
     
-    c_g1, c_g2, c_sig = st.columns([1,1,2])
-    with c_g1: st.plotly_chart(render_gauge_chart(analysis['confluence'], "Confluence Score"), use_container_width=True)
-    with c_g2: st.plotly_chart(render_gauge_chart(analysis['confidence'], "Confidence %"), use_container_width=True)
-    with c_sig:
-        color = "#00E676" if "CE" in analysis['recommendation'] else ("#FF3D00" if "PE" in analysis['recommendation'] else "#FFC107")
-        st.markdown(f"""
-        <div style="padding: 20px; border-radius: 10px; background-color: #1E2130; border-left: 5px solid {color}; height: 100%;">
-            <h3 style="margin-top: 0; color: {color};">Signal: {analysis['recommendation']}</h3>
-            <p style="font-size: 1.1em;"><b>Reasoning:</b> {analysis['reason']}</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-    st.markdown("---")
+    strikes = df["Strike"].values
+    ce_oi = df["CE_OI"].values
+    pe_oi = df["PE_OI"].values
     
-    c_chart, c_table = st.columns([2, 2])
-    with c_chart: st.plotly_chart(render_oi_heatmap(df_filtered), use_container_width=True)
-    with c_table:
-        st.markdown("### Live Greeks & IV (ATM)")
-        atm_df = df_filtered.iloc[(df_filtered['Strike'] - ltp).abs().argsort()[:5]].sort_values('Strike')
-        st.dataframe(atm_df[['Strike', 'CE_LTP', 'CE_Delta', 'CE_IV', 'PE_LTP', 'PE_Delta', 'PE_IV']], hide_index=True, use_container_width=True)
-
-if live_feed:
-    time.sleep(refresh_rate)
-    st.rerun()
+    if len(strikes) == 0:
+        return 0
+    
+    # Vectorized calculation to avoid slow O(n^2) loops
+    spot_grid, strike_grid = np.meshgrid(strikes, strikes, indexing='ij')
+    
+    ce_loss = np.maximum(0, spot_grid - strike_grid) * ce_oi
+    pe_loss = np.maximum(0, strike_grid - spot_grid) * pe_oi
+    
+    total_loss = np.sum(ce_loss + pe_loss, axis=1)
+    
+    return strikes[np.argmin(total_loss)]
