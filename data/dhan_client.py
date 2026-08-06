@@ -5,7 +5,7 @@ import pandas as pd
 class DhanMarketData:
     def __init__(self):
         try:
-            # NEW v2.x LOGIN METHOD:
+            # THIS IS THE V2 FIX - It wraps the keys in a Context first!
             dhan_context = DhanContext(CLIENT_ID, ACCESS_TOKEN)
             self.dhan = dhanhq(dhan_context)
             logger.info("Dhan API Initialized.")
