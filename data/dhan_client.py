@@ -1,7 +1,7 @@
 import time
 import pandas as pd
 import dhanhq
-import inspect # For signature diagnostics
+import inspect
 from dhanhq import dhanhq as DhanHQClient
 from core.config import CLIENT_ID, ACCESS_TOKEN, logger
 
@@ -15,7 +15,6 @@ class DhanMarketData:
     def __init__(self):
         self.diagnostic_printed = False
         try:
-            # SDK Version Check
             logger.info(f"Dhan SDK version: {getattr(dhanhq, '__version__', 'unknown')}")
             
             try:
@@ -25,7 +24,6 @@ class DhanMarketData:
             except ImportError:
                 self.dhan = DhanHQClient(CLIENT_ID, ACCESS_TOKEN)
 
-            # API Authentication Test
             auth_test = self.dhan.get_fund_limits()
             if isinstance(auth_test, dict) and auth_test.get("status") == "failure":
                 logger.error(f"Auth test failed: {auth_test}")
@@ -33,11 +31,9 @@ class DhanMarketData:
             logger.exception("Init Failure")
 
     def get_live_option_chain(self, expiry_date, symbol="NIFTY", retries=3):
-        # 1. DIAGNOSTICS: Run this only once to not spam the logs
         if not self.diagnostic_printed:
             try:
                 logger.info(f"DEBUG: option_chain signature: {inspect.signature(self.dhan.option_chain)}")
-                logger.info(f"DEBUG: option_chain doc: {self.dhan.option_chain.__doc__}")
             except Exception as e:
                 logger.error(f"Could not inspect signature: {e}")
             self.diagnostic_printed = True
@@ -50,15 +46,11 @@ class DhanMarketData:
         
         for attempt in range(retries):
             try:
-                # 2. EXPLICIT KEYWORD ARGUMENTS
-                # We use the specific parameter names found in SDK docs
                 response = self.dhan.option_chain(
                     under_security_id=sec_id,
                     under_exchange_segment=segment,
                     expiry=expiry_date
                 )
-                
-                logger.info(f"Raw Response: {response}")
                 
                 if response and response.get("status") != "failure" and "data" in response:
                     data = response.get("data", {})
@@ -69,7 +61,6 @@ class DhanMarketData:
                 logger.error(f"Option Chain Failed. Response: {response}")
                 
             except Exception:
-                # 3. FULL TRACEBACK
                 logger.exception("CRITICAL: option_chain() raised an exception")
             
             time.sleep(2 ** attempt)
@@ -77,7 +68,8 @@ class DhanMarketData:
         return None, None
 
     def process_oc_to_dataframe(self, oc_data):
-        if not oc_data or not isinstance(oc_data, dict): return pd.DataFrame()
+        if not oc_data or not isinstance(oc_data, dict): 
+            return pd.DataFrame()
         
         rows = []
         for strike, data in oc_data.items():
@@ -100,4 +92,16 @@ class DhanMarketData:
                 "PE_IV": pe.get("implied_volatility", 0),
                 "PE_Delta": pe.get("greeks", {}).get("delta", 0) if isinstance(pe.get("greeks"), dict) else 0
             })
-        return pd.DataFrame(rows).sort_values("Strike").reset_index(drop=True)
+            
+        # GUARD: Prevent pandas sort crash if API returns an empty structure
+        if not rows:
+            return pd.DataFrame()
+            
+        df = pd.DataFrame(rows)
+        required_cols = ["Strike", "CE_OI", "PE_OI", "CE_LTP", "PE_LTP"]
+        for col in required_cols:
+            if col not in df.columns:
+                logger.error(f"FATAL: Missing required column {col} in API response")
+                return pd.DataFrame()
+                
+        return df.sort_values("Strike").reset_index(drop=True)
