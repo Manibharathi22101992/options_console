@@ -20,11 +20,23 @@ if 'db_initialized' not in st.session_state:
     init_db()
     st.session_state.db_initialized = True
 
+# We renamed this function to "get_new_dhan_client" to force Streamlit 
+# to clear its memory and use our new v2.x Dhan API login fix!
 @st.cache_resource
-def get_dhan_client():
+def get_new_dhan_client():
     return DhanMarketData()
 
-client = get_dhan_client()
+client = get_new_dhan_client()
+
+# --- Live Feed Toggle in Sidebar ---
+st.sidebar.title("Controls")
+live_feed = st.sidebar.toggle("🔴 Live Market Feed", value=True)
+if live_feed:
+    st.sidebar.success("Live feed is ON (Updating every 3s)")
+else:
+    st.sidebar.warning("Live feed is PAUSED")
+# ----------------------------------------
+
 st.title("⚡ NIFTY Pro Intraday Options Dashboard")
 
 # Placeholder for auto-refreshing dashboard
@@ -86,6 +98,7 @@ with placeholder.container():
         atm_df = df_filtered.iloc[(df_filtered['Strike'] - ltp).abs().argsort()[:5]].sort_values('Strike')
         st.dataframe(atm_df[['Strike', 'CE_LTP', 'CE_Delta', 'CE_IV', 'PE_LTP', 'PE_Delta', 'PE_IV']], hide_index=True, use_container_width=True)
 
-# 3-second delay to comply with Dhan HQ API rate limits
-time.sleep(3)
-st.rerun()
+# Only loop if the toggle is ON
+if live_feed:
+    time.sleep(3)
+    st.rerun()
