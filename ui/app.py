@@ -5,6 +5,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
 import time
+import pandas as pd
+import numpy as np
 from data.dhan_client import DhanMarketData
 from analytics.engine import calculate_pcr, calculate_max_pain
 from analytics.signals import analyze_market
@@ -17,12 +19,11 @@ if 'db_initialized' not in st.session_state:
     init_db()
     st.session_state.db_initialized = True
 
-# Renamed cache function to force a hard reset in Streamlit
 @st.cache_resource
-def get_dhan_client_final_v3():
+def get_dhan_client_final_v4():
     return DhanMarketData()
 
-client = get_dhan_client_final_v3()
+client = get_dhan_client_final_v4()
 
 st.sidebar.title("Controls")
 live_feed = st.sidebar.toggle("🔴 Live Market Feed", value=True)
@@ -37,21 +38,40 @@ placeholder = st.empty()
 with placeholder.container():
     ltp, oc_raw = client.get_live_option_chain()
     
-    if oc_raw is None:
-        st.error("Waiting for Market Data... Ensure Market is open and API credentials in Secrets are correct.")
-        st.stop()
-        
-    df = client.process_oc_to_dataframe(oc_raw)
-    
-    if df.empty:
-        st.warning("No option chain data available for this expiry.")
-        st.stop()
-        
-    # SAFETY FALLBACK: If the API doesn't return the Spot Price, mathematically calculate the ATM strike using premiums
-    if ltp == 0:
-        atm_idx = (df['CE_LTP'] - df['PE_LTP']).abs().idxmin()
-        ltp = df.loc[atm_idx, 'Strike']
-        
+    # ---------------------------------------------------------
+    # NEW: OFFLINE / SIMULATION MODE
+    # If API is asleep for the night or the date is wrong, generate realistic mock data!
+    # ---------------------------------------------------------
+    if ltp is None or oc_raw is None or not oc_raw:
+        st.warning("⚠️ Market is closed or date is incorrect. Running in Offline Simulation Mode!")
+        ltp = 24000.0
+        strikes = np.arange(ltp - 500, ltp + 550, 50)
+        rows = []
+        for strike in strikes:
+            rows.append({
+                "Strike": float(strike),
+                "CE_OI": np.random.randint(10000, 300000),
+                "CE_LTP": max(5, 24000 - strike) + np.random.randint(10, 50),
+                "CE_IV": round(np.random.uniform(12, 25), 2),
+                "CE_Delta": round(np.random.uniform(0.1, 0.9), 2),
+                "PE_OI": np.random.randint(10000, 300000),
+                "PE_LTP": max(5, strike - 24000) + np.random.randint(10, 50),
+                "PE_IV": round(np.random.uniform(12, 25), 2),
+                "PE_Delta": round(-np.random.uniform(0.1, 0.9), 2)
+            })
+        df = pd.DataFrame(rows)
+    else:
+        df = client.process_oc_to_dataframe(oc_raw)
+        if df.empty:
+            st.warning("No option chain data available for this expiry.")
+            st.stop()
+            
+        # SAFETY FALLBACK: Calculate ATM if spot price is missing
+        if ltp == 0:
+            atm_idx = (df['CE_LTP'] - df['PE_LTP']).abs().idxmin()
+            ltp = df.loc[atm_idx, 'Strike']
+
+    # Filter 10 strikes above and below ATM
     df_filtered = df[(df['Strike'] >= ltp - 500) & (df['Strike'] <= ltp + 500)]
     
     pcr = calculate_pcr(df_filtered)
