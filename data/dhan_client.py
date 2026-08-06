@@ -2,6 +2,7 @@ import time
 import pandas as pd
 import dhanhq
 import inspect
+from pprint import pformat
 from dhanhq import dhanhq as DhanHQClient
 from core.config import CLIENT_ID, ACCESS_TOKEN, logger
 
@@ -52,10 +53,28 @@ class DhanMarketData:
                     expiry=expiry_date
                 )
                 
+                # --- DEEP INSPECTION LOGGING ---
+                logger.info("========== RAW DHAN OPTION CHAIN RESPONSE ==========")
+                logger.info(pformat(response))
+                logger.info("====================================================")
+                
+                if response and "data" in response:
+                    data_payload = response["data"]
+                    logger.info(f"Type of response['data']: {type(data_payload)}")
+                    if isinstance(data_payload, dict):
+                        logger.info(f"Keys of response['data']: {list(data_payload.keys())}")
+                    elif isinstance(data_payload, list):
+                        logger.info(f"Length of response['data'] list: {len(data_payload)}")
+
                 if response and response.get("status") != "failure" and "data" in response:
                     data = response.get("data", {})
                     ltp = response.get("last_price", data.get("last_price", 0))
-                    oc_data = data.get("oc", data) if isinstance(data, dict) else data
+                    
+                    if isinstance(data, dict):
+                        oc_data = data.get("oc", data)
+                    else:
+                        oc_data = data
+                        
                     return ltp, oc_data
                 
                 logger.error(f"Option Chain Failed. Response: {response}")
@@ -68,10 +87,9 @@ class DhanMarketData:
         return None, None
 
     def process_oc_to_dataframe(self, oc_data):
-        # Inspect structure shape for debugging off-hours empty responses
-        logger.info(f"Type of oc_data: {type(oc_data)}")
+        logger.info(f"Type entering process_oc_to_dataframe: {type(oc_data)}")
         if isinstance(oc_data, dict):
-            logger.info(f"Keys: {list(oc_data.keys())[:10]}")
+            logger.info(f"Sample keys of oc_data: {list(oc_data.keys())[:10]}")
             
         if not oc_data or not isinstance(oc_data, dict): 
             return pd.DataFrame()
@@ -100,7 +118,6 @@ class DhanMarketData:
             
         df = pd.DataFrame(rows)
         
-        # Rigorous dataframe validation guards
         if df.empty:
             logger.error("Option chain parsing produced an empty DataFrame.")
             logger.error(f"Rows parsed: {len(rows)}")
