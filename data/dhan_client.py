@@ -1,76 +1,141 @@
-Your code is probably doing something like:
+import time
+import pandas as pd
+import dhanhq
+import inspect
+from dhanhq import dhanhq as DhanHQClient
+from core.config import CLIENT_ID, ACCESS_TOKEN, logger
 
-oc_data = response
-logger.info(type(oc_data))
-logger.info(oc_data.keys())
-
-Instead, you need to inspect response["data"].
-
-Replace your debugging code with this
-response = self.dhan.option_chain(
-    NIFTY_ID,
-    "IDX_I",
-    expiry_date
-)
-
-logger.info(f"Full Response = {response}")
-
-if response.get("status") != "success":
-    logger.error("Option Chain API Failed")
-    return None
-
-data = response.get("data")
-
-logger.info(f"Type(data): {type(data)}")
-logger.info(f"Data: {data}")
-
-if isinstance(data, dict):
-    logger.info(f"Data Keys: {list(data.keys())}")
-I want to see this output
-
-I'm specifically looking for something like:
-
-Data:
-{
-   "oc": {...}
+UNDERLYINGS = {
+    "NIFTY": {"id": 13, "segment": "IDX_I"},
+    "BANKNIFTY": {"id": 25, "segment": "IDX_I"},
+    "FINNIFTY": {"id": 27, "segment": "IDX_I"}
 }
 
-or
+class DhanMarketData:
+    def __init__(self):
+        self.diagnostic_printed = False
+        try:
+            logger.info(f"Dhan SDK version: {getattr(dhanhq, '__version__', 'unknown')}")
+            
+            try:
+                from dhanhq import DhanContext
+                dhan_context = DhanContext(CLIENT_ID, ACCESS_TOKEN)
+                self.dhan = DhanHQClient(dhan_context)
+            except ImportError:
+                self.dhan = DhanHQClient(CLIENT_ID, ACCESS_TOKEN)
 
-Data:
-{
-   "records": [...]
-}
+            auth_test = self.dhan.get_fund_limits()
+            if isinstance(auth_test, dict) and auth_test.get("status") == "failure":
+                logger.error(f"Auth test failed: {auth_test}")
+        except Exception:
+            logger.exception("Init Failure")
 
-or
+    def get_live_option_chain(self, expiry_date, symbol="NIFTY", retries=3):
+        if not self.diagnostic_printed:
+            try:
+                logger.info(f"DEBUG: option_chain signature: {inspect.signature(self.dhan.option_chain)}")
+            except Exception as e:
+                logger.error(f"Could not inspect signature: {e}")
+            self.diagnostic_printed = True
 
-Data:
-{}
+        cfg = UNDERLYINGS.get(symbol, UNDERLYINGS["NIFTY"])
+        sec_id = cfg["id"]
+        segment = cfg["segment"]
+        
+        logger.info(f"Request: id={sec_id}, segment={segment}, expiry={expiry_date}")
+        
+        for attempt in range(retries):
+            try:
+                response = self.dhan.option_chain(
+                    under_security_id=sec_id,
+                    under_exchange_segment=segment,
+                    expiry=expiry_date
+                )
+                
+                logger.info(f"Full Response = {response}")
+                logger.info(f"Expiry Used: {expiry_date}")
+                
+                if not response or response.get("status") != "success":
+                    logger.error(f"Option Chain API Failed or status not success. Response: {response}")
+                    return None, None
+                
+                data = response.get("data")
+                logger.info(f"Type(data): {type(data)}")
+                logger.info(f"Data: {data}")
+                
+                if isinstance(data, dict):
+                    logger.info(f"Data Keys: {list(data.keys())}")
+                    oc_data = data.get("oc", data)
+                elif isinstance(data, list):
+                    logger.info(f"Data is a list of length: {len(data)}")
+                    oc_data = data
+                else:
+                    oc_data = {}
 
-or
+                ltp = response.get("last_price", data.get("last_price", 0) if isinstance(data, dict) else 0)
+                return ltp, oc_data
+                
+            except Exception:
+                logger.exception("CRITICAL: option_chain() raised an exception")
+            
+            time.sleep(2 ** attempt)
+            
+        return None, None
 
-Data:
-[]
-
-That will tell us exactly how to parse it.
-
-I also suspect one more possibility
-
-Your expiry is:
-
-2026-08-11
-
-If that expiry has no listed option chain (for example, if it's not a valid exchange expiry), some APIs return:
-
-{
-    "status": "success",
-    "data": {}
-}
-
-which would also produce:
-
-Rows parsed: 0
-
-So after printing response["data"], also log:
-
-logger.info(f"Expiry Used: {expiry_date}")
+    def process_oc_to_dataframe(self, oc_data):
+        if not oc_data: 
+            return pd.DataFrame()
+            
+        if isinstance(oc_data, list):
+            rows = []
+            for item in oc_data:
+                strike_price = float(item.get("strike_price", item.get("Strike", 0)))
+                ce = item.get("ce", item.get("CE", {}))
+                pe = item.get("pe", item.get("PE", {}))
+                rows.append({
+                    "Strike": strike_price,
+                    "CE_OI": ce.get("oi", ce.get("open_interest", 0)),
+                    "CE_LTP": ce.get("last_price", 0),
+                    "CE_IV": ce.get("implied_volatility", 0),
+                    "CE_Delta": ce.get("greeks", {}).get("delta", 0) if isinstance(ce.get("greeks"), dict) else 0,
+                    "PE_OI": pe.get("oi", pe.get("open_interest", 0)),
+                    "PE_LTP": pe.get("last_price", 0),
+                    "PE_IV": pe.get("implied_volatility", 0),
+                    "PE_Delta": pe.get("greeks", {}).get("delta", 0) if isinstance(pe.get("greeks"), dict) else 0
+                })
+            df = pd.DataFrame(rows)
+        elif isinstance(oc_data, dict):
+            rows = []
+            for strike, data in oc_data.items():
+                if strike == "last_price" or not isinstance(data, dict): continue
+                try:
+                    strike_price = float(strike)
+                except ValueError: continue
+                    
+                ce = data.get("ce", {})
+                pe = data.get("pe", {})
+                
+                rows.append({
+                    "Strike": strike_price,
+                    "CE_OI": ce.get("oi", ce.get("open_interest", 0)),
+                    "CE_LTP": ce.get("last_price", 0),
+                    "CE_IV": ce.get("implied_volatility", 0),
+                    "CE_Delta": ce.get("greeks", {}).get("delta", 0) if isinstance(ce.get("greeks"), dict) else 0,
+                    "PE_OI": pe.get("oi", pe.get("open_interest", 0)),
+                    "PE_LTP": pe.get("last_price", 0),
+                    "PE_IV": pe.get("implied_volatility", 0),
+                    "PE_Delta": pe.get("greeks", {}).get("delta", 0) if isinstance(pe.get("greeks"), dict) else 0
+                })
+            df = pd.DataFrame(rows)
+        else:
+            return pd.DataFrame()
+            
+        if df.empty:
+            logger.error("Option chain parsing produced an empty DataFrame.")
+            return pd.DataFrame()
+            
+        if "Strike" not in df.columns:
+            logger.error(f"Available columns: {list(df.columns)}")
+            return pd.DataFrame()
+            
+        return df.sort_values(by="Strike").reset_index(drop=True)
