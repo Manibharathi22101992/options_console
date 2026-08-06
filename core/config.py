@@ -1,15 +1,21 @@
+import os
 import logging
-import streamlit as st
 
-# Read credentials from Streamlit Secrets (Cloud Deployment)
-CLIENT_ID = st.secrets["DHAN_CLIENT_ID"]
-ACCESS_TOKEN = st.secrets["DHAN_ACCESS_TOKEN"]
-NIFTY_ID = st.secrets.get("NIFTY_SECURITY_ID", "13")
-EXPIRY_DATE = st.secrets["EXPIRY_DATE"]
+# Safely handle both Streamlit Cloud (st.secrets) and Local (.env) environments
+try:
+    import streamlit as st
+    CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", os.getenv("DHAN_CLIENT_ID"))
+    ACCESS_TOKEN = st.secrets.get("DHAN_ACCESS_TOKEN", os.getenv("DHAN_ACCESS_TOKEN"))
+except ImportError:
+    CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
+    ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN")
 
-# Logging Configuration
+NIFTY_ID = "13"
+
+# Advanced Logging Configuration
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
 )
-logger = logging.getLogger("NiftyOptionsDash")
+logger = logging.getLogger("QuantEngine")
