@@ -1,11 +1,13 @@
-from dhanhq import dhanhq
+from dhanhq import DhanContext, dhanhq
 from core.config import CLIENT_ID, ACCESS_TOKEN, NIFTY_ID, EXPIRY_DATE, logger
 import pandas as pd
 
 class DhanMarketData:
     def __init__(self):
         try:
-            self.dhan = dhanhq(CLIENT_ID, ACCESS_TOKEN)
+            # NEW v2.x LOGIN METHOD:
+            dhan_context = DhanContext(CLIENT_ID, ACCESS_TOKEN)
+            self.dhan = dhanhq(dhan_context)
             logger.info("Dhan API Initialized.")
         except Exception as e:
             logger.error(f"Dhan API Auth Failed: {e}")
