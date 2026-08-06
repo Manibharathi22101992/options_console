@@ -1,76 +1,64 @@
 import sys
 import os
 
+# Tell Python to look in the main folder for our other modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
 import time
-import pandas as pd
-import numpy as np
 from data.dhan_client import DhanMarketData
 from analytics.engine import calculate_pcr, calculate_max_pain
 from analytics.signals import analyze_market
 from ui.components import render_gauge_chart, render_oi_heatmap
 from core.database import init_db, save_signal
 
+# Configuration
 st.set_page_config(page_title="Pro NIFTY Options Dash", layout="wide", page_icon="📈")
 
+# Database Initialization
 if 'db_initialized' not in st.session_state:
     init_db()
     st.session_state.db_initialized = True
 
 @st.cache_resource
-def get_dhan_client_final_v4():
+def get_dhan_client_final_prod():
     return DhanMarketData()
 
-client = get_dhan_client_final_v4()
+client = get_dhan_client_final_prod()
 
+# --- Live Feed Toggle in Sidebar ---
 st.sidebar.title("Controls")
 live_feed = st.sidebar.toggle("🔴 Live Market Feed", value=True)
 if live_feed:
     st.sidebar.success("Live feed is ON (Updating every 3s)")
 else:
     st.sidebar.warning("Live feed is PAUSED")
+# ----------------------------------------
 
 st.title("⚡ NIFTY Pro Intraday Options Dashboard")
+
+# Placeholder for auto-refreshing dashboard
 placeholder = st.empty()
 
 with placeholder.container():
     ltp, oc_raw = client.get_live_option_chain()
     
-    # ---------------------------------------------------------
-    # NEW: OFFLINE / SIMULATION MODE
-    # If API is asleep for the night or the date is wrong, generate realistic mock data!
-    # ---------------------------------------------------------
+    # STRICT PRODUCTION MODE: If Dhan returns no data, halt and wait.
     if ltp is None or oc_raw is None or not oc_raw:
-        st.warning("⚠️ Market is closed or date is incorrect. Running in Offline Simulation Mode!")
-        ltp = 24000.0
-        strikes = np.arange(ltp - 500, ltp + 550, 50)
-        rows = []
-        for strike in strikes:
-            rows.append({
-                "Strike": float(strike),
-                "CE_OI": np.random.randint(10000, 300000),
-                "CE_LTP": max(5, 24000 - strike) + np.random.randint(10, 50),
-                "CE_IV": round(np.random.uniform(12, 25), 2),
-                "CE_Delta": round(np.random.uniform(0.1, 0.9), 2),
-                "PE_OI": np.random.randint(10000, 300000),
-                "PE_LTP": max(5, strike - 24000) + np.random.randint(10, 50),
-                "PE_IV": round(np.random.uniform(12, 25), 2),
-                "PE_Delta": round(-np.random.uniform(0.1, 0.9), 2)
-            })
-        df = pd.DataFrame(rows)
-    else:
-        df = client.process_oc_to_dataframe(oc_raw)
-        if df.empty:
-            st.warning("No option chain data available for this expiry.")
-            st.stop()
-            
-        # SAFETY FALLBACK: Calculate ATM if spot price is missing
-        if ltp == 0:
-            atm_idx = (df['CE_LTP'] - df['PE_LTP']).abs().idxmin()
-            ltp = df.loc[atm_idx, 'Strike']
-
+        st.error("Waiting for real Market Data... (The market is currently closed or Dhan API is in after-hours maintenance).")
+        st.stop()
+        
+    df = client.process_oc_to_dataframe(oc_raw)
+    
+    if df.empty:
+        st.warning("No option chain data available for this expiry.")
+        st.stop()
+        
+    # SAFETY FALLBACK: If API doesn't return spot price, calculate ATM
+    if ltp == 0:
+        atm_idx = (df['CE_LTP'] - df['PE_LTP']).abs().idxmin()
+        ltp = df.loc[atm_idx, 'Strike']
+        
     # Filter 10 strikes above and below ATM
     df_filtered = df[(df['Strike'] >= ltp - 500) & (df['Strike'] <= ltp + 500)]
     
@@ -114,6 +102,7 @@ with placeholder.container():
         atm_df = df_filtered.iloc[(df_filtered['Strike'] - ltp).abs().argsort()[:5]].sort_values('Strike')
         st.dataframe(atm_df[['Strike', 'CE_LTP', 'CE_Delta', 'CE_IV', 'PE_LTP', 'PE_Delta', 'PE_IV']], hide_index=True, use_container_width=True)
 
+# Only loop if the toggle is ON
 if live_feed:
     time.sleep(3)
     st.rerun()
