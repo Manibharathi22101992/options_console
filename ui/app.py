@@ -10,6 +10,7 @@ from data.dhan_client import DhanMarketData
 from analytics.signals import analyze_market
 from analytics.institutional import calculate_exposures
 from analytics.smart_money import analyze_smart_money
+from analytics.volatility import analyze_volatility
 from ui.components import render_gauge_chart, render_oi_heatmap
 from core.database import init_db
 
@@ -29,10 +30,10 @@ if 'db_initialized' not in st.session_state:
     st.session_state.db_initialized = True
 
 @st.cache_resource
-def get_dhan_client_v11():
+def get_dhan_client_v12():
     return DhanMarketData()
 
-client = get_dhan_client_v11()
+client = get_dhan_client_v12()
 
 # --- SIDEBAR CONTROLS ---
 st.sidebar.title("⚙️ Engine Controls")
@@ -70,18 +71,17 @@ df_filtered = df[(df['Strike'] >= ltp - 600) & (df['Strike'] <= ltp + 600)].copy
 overall_pcr, atm_pcr = calculate_advanced_pcr(df_filtered, ltp)
 max_pain = calculate_max_pain(df_filtered)
 exposures = calculate_exposures(df_filtered, ltp)
+volatility = analyze_volatility(df_filtered, ltp, expiry_input)
 analysis = analyze_market(ltp, df_filtered, max_pain, overall_pcr, atm_pcr)
 
 # --- STATE MEMORY (BASELINE TRACKING) ---
 current_total_oi = df_filtered['CE_OI'].sum() + df_filtered['PE_OI'].sum()
 
 if 'baseline' not in st.session_state:
-    # Set the baseline on first load
     st.session_state.baseline = {
         'ltp': ltp, 'oi': current_total_oi, 'pcr': overall_pcr, 'time': time.time()
     }
     
-# Run Phase 4 & 5 Engines
 smart_money = analyze_smart_money(
     current_price=ltp, prev_price=st.session_state.baseline['ltp'],
     current_oi=current_total_oi, prev_oi=st.session_state.baseline['oi'],
@@ -98,7 +98,7 @@ st.markdown("""
     .ribbon-val { font-size: 1.4em; font-weight: bold; color: #FFF; }
     .pos-gex { color: #00E676; }
     .neg-gex { color: #FF3D00; }
-    .sm-card { padding: 15px; border-radius: 10px; background-color: #1E1E2E; border: 1px solid #333; text-align: center; }
+    .sm-card { padding: 15px; border-radius: 10px; background-color: #1E1E2E; border: 1px solid #333; text-align: center; height: 100%;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -117,41 +117,62 @@ with r7: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Hedg
 st.markdown("---")
 
 # ==========================================
-# MIDDLE ROW 1: SMART MONEY & DIVERGENCE
+# MIDDLE ROW 1: INSTITUTIONAL METRICS
 # ==========================================
 sm1, sm2, sm3, sm4 = st.columns(4)
 with sm1:
     st.markdown(f"""
     <div class='sm-card'>
-        <div style='color: #888; font-size: 0.9em;'>SMART MONEY FLOW</div>
-        <div style='color: {smart_money["flow_color"]}; font-size: 1.6em; font-weight: bold;'>{smart_money["flow"]}</div>
+        <div style='color: #888; font-size: 0.9em; letter-spacing: 1px;'>SMART MONEY FLOW</div>
+        <div style='color: {smart_money["flow_color"]}; font-size: 1.6em; font-weight: bold; margin-top: 10px;'>{smart_money["flow"]}</div>
         <div style='color: #AAA; font-size: 0.85em;'>Confidence: {smart_money["flow_score"]}%</div>
     </div>
     """, unsafe_allow_html=True)
 with sm2:
     st.markdown(f"""
     <div class='sm-card'>
-        <div style='color: #888; font-size: 0.9em;'>DIVERGENCE DETECTOR</div>
-        <div style='color: {smart_money["div_color"]}; font-size: 1.3em; font-weight: bold; padding-top: 5px;'>{smart_money["divergence"]}</div>
+        <div style='color: #888; font-size: 0.9em; letter-spacing: 1px;'>DIVERGENCE DETECTOR</div>
+        <div style='color: {smart_money["div_color"]}; font-size: 1.3em; font-weight: bold; padding-top: 10px;'>{smart_money["divergence"]}</div>
         <div style='color: #AAA; font-size: 0.85em;'>Confidence: {smart_money["div_score"]}%</div>
     </div>
     """, unsafe_allow_html=True)
-with sm3: st.plotly_chart(render_gauge_chart(analysis['confluence'], "Overall AI Score"), use_container_width=True)
-with sm4: st.plotly_chart(render_gauge_chart(analysis['confidence'], "Win Probability"), use_container_width=True)
+with sm3: 
+    st.markdown(f"""
+    <div class='sm-card'>
+        <div style='color: #888; font-size: 0.9em; letter-spacing: 1px;'>EXPECTED MOVE (±)</div>
+        <div style='color: #FFF; font-size: 1.8em; font-weight: bold; margin-top: 5px;'>{volatility["expected_move"]:.0f} Pts</div>
+        <div style='color: #AAA; font-size: 0.85em;'>Bounds: {ltp - volatility["expected_move"]:.0f} - {ltp + volatility["expected_move"]:.0f}</div>
+    </div>
+    """, unsafe_allow_html=True)
+with sm4: 
+    st.markdown(f"""
+    <div class='sm-card'>
+        <div style='color: #888; font-size: 0.9em; letter-spacing: 1px;'>VOLATILITY REGIME</div>
+        <div style='color: {volatility["color"]}; font-size: 1.4em; font-weight: bold; padding-top: 10px;'>{volatility["regime"]}</div>
+        <div style='color: {volatility["color"]}; font-size: 0.85em;'>IV: {volatility["atm_iv"]:.1f}% | Risk: {volatility["crush_risk"]}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
 # ==========================================
-# MIDDLE ROW 2: AI DECISION ENGINE
+# MIDDLE ROW 2: AI DECISION ENGINE & GAUGES
 # ==========================================
-color = "#00E676" if "CE" in analysis['recommendation'] else ("#FF3D00" if "PE" in analysis['recommendation'] else "#FFC107")
-st.markdown(f"""
-<div style="padding: 20px; border-radius: 10px; background-color: #1E1E2E; border-left: 5px solid {color}; margin-top: 10px;">
-    <h3 style="margin-top: 0; color: {color};">Trade Setup: {analysis['recommendation']}</h3>
-    <p style="color: #AAA;"><b>Market Regime:</b> {analysis['regime']} | <b>Risk Profile:</b> {analysis['risk']}</p>
-    <p style="color: #AAA;"><b>Dealer Positioning:</b> {exposures['dealer_regime']} | <b>Smart Money:</b> {smart_money['flow']}</p>
-    <hr style="border-color: #333;">
-    <div style="font-size: 0.95em; line-height: 1.6;">{analysis['reason']}</div>
-</div>
-""", unsafe_allow_html=True)
+st.markdown("<br>", unsafe_allow_html=True)
+c_g1, c_g2, c_sig = st.columns([1,1,2])
+
+with c_g1: st.plotly_chart(render_gauge_chart(analysis['confluence'], "AI Confluence Score"), use_container_width=True)
+with c_g2: st.plotly_chart(render_gauge_chart(analysis['confidence'], "Win Probability %"), use_container_width=True)
+
+with c_sig:
+    color = "#00E676" if "CE" in analysis['recommendation'] else ("#FF3D00" if "PE" in analysis['recommendation'] else "#FFC107")
+    st.markdown(f"""
+    <div style="padding: 20px; border-radius: 10px; background-color: #1E1E2E; border-left: 5px solid {color}; height: 100%;">
+        <h3 style="margin-top: 0; color: {color};">Trade Setup: {analysis['recommendation']}</h3>
+        <p style="color: #AAA;"><b>Market Regime:</b> {analysis['regime']} | <b>Risk Profile:</b> {analysis['risk']}</p>
+        <p style="color: #AAA;"><b>Dealer Positioning:</b> {exposures['dealer_regime']} | <b>Smart Money:</b> {smart_money['flow']}</p>
+        <hr style="border-color: #333;">
+        <div style="font-size: 0.95em; line-height: 1.6;">{analysis['reason']}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
 st.markdown("---")
 
