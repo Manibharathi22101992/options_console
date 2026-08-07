@@ -1,9 +1,8 @@
-def analyze_smart_money(current_price, prev_price, current_oi, prev_oi, current_pcr, prev_pcr):
+def analyze_smart_money(current_price, prev_price, current_oi, prev_oi, current_pcr, prev_pcr, current_iv, prev_iv):
     """
-    Phase 4 & 5: Smart Money Flow and Divergence Engine
-    Compares current state to baseline state to detect institutional activity.
+    SPRINT 4 & 7: Smart Money Flow and Advanced Divergence Engine
+    Now tracks Volatility Crush and Expansion to detect Institutional Traps.
     """
-    # Guard against first-run empty baselines
     if prev_price == 0 or prev_oi == 0:
         return {
             "flow": "Calibrating...", "flow_score": 0, "flow_color": "#888",
@@ -13,68 +12,54 @@ def analyze_smart_money(current_price, prev_price, current_oi, prev_oi, current_
     price_delta = current_price - prev_price
     oi_delta = current_oi - prev_oi
     pcr_delta = current_pcr - prev_pcr
+    iv_delta = current_iv - prev_iv
     
     # ----------------------------------------
-    # PHASE 4: SMART MONEY FLOW (OI vs Price)
+    # FLOW ENGINE
     # ----------------------------------------
     if price_delta > 0 and oi_delta > 0:
-        flow = "Long Build-Up"
-        f_score = 85
-        f_color = "#00E676" # Bullish Green
+        flow, f_score, f_color = "Long Build-Up", 85, "#00E676"
     elif price_delta < 0 and oi_delta > 0:
-        flow = "Short Build-Up"
-        f_score = 85
-        f_color = "#FF3D00" # Bearish Red
+        flow, f_score, f_color = "Short Build-Up", 85, "#FF3D00"
     elif price_delta > 0 and oi_delta < 0:
-        flow = "Short Covering"
-        f_score = 72
-        f_color = "#00E676" 
+        flow, f_score, f_color = "Short Covering", 72, "#00E676"
     elif price_delta < 0 and oi_delta < 0:
-        flow = "Long Unwinding"
-        f_score = 72
-        f_color = "#FF3D00"
+        flow, f_score, f_color = "Long Unwinding", 72, "#FF3D00"
     else:
-        flow = "Consolidation"
-        f_score = 50
-        f_color = "#FFC107" # Yellow
+        flow, f_score, f_color = "Consolidation", 50, "#FFC107"
 
     # ----------------------------------------
-    # PHASE 5: DIVERGENCE ENGINE
+    # SPRINT 7: ADVANCED DIVERGENCE ENGINE
     # ----------------------------------------
     divergence = "No Divergence Detected"
     d_score = 50
     d_color = "#888"
 
-    # Bearish Divergence: Price rallying, but PCR and OI dropping (Weakness)
-    if price_delta > 0 and pcr_delta < 0 and oi_delta <= 0:
-        divergence = "Bearish Divergence (Weak Rally)"
-        d_score = 82
+    # 1. Volatility Crush Divergence (Price Up, IV Down heavily)
+    if price_delta > 0 and iv_delta < -0.5:
+        divergence = "IV Crush (Upside Capped/Call Selling)"
+        d_score = 85
+        d_color = "#FFC107"
+        
+    # 2. Panic Divergence (Price Down, IV Up, PCR Down)
+    elif price_delta < 0 and iv_delta > 0.5 and pcr_delta < 0:
+        divergence = "Panic Put Buying (Volatility Expansion)"
+        d_score = 88
         d_color = "#FF3D00"
         
-    # Bullish Divergence: Price dropping, but PCR increasing (Hidden Put Selling)
+    # 3. Hidden Accumulation (Price Down, PCR Up)
     elif price_delta < 0 and pcr_delta > 0:
         divergence = "Bullish Hidden Accumulation"
         d_score = 84
         d_color = "#00E676"
         
-    # Confirmation Trends
-    elif price_delta > 0 and pcr_delta > 0:
-        divergence = "Trend Confirmed (Bullish)"
-        d_score = 90
-        d_color = "#00E676"
-        
-    elif price_delta < 0 and pcr_delta < 0:
-        divergence = "Trend Confirmed (Bearish)"
-        d_score = 90
+    # 4. Weak Rally (Price Up, PCR Down, OI Flat/Down)
+    elif price_delta > 0 and pcr_delta < 0 and oi_delta <= 0:
+        divergence = "Bearish Divergence (Weak Rally)"
+        d_score = 82
         d_color = "#FF3D00"
 
     return {
-        "flow": flow,
-        "flow_score": f_score,
-        "flow_color": f_color,
-        "divergence": divergence,
-        "div_score": d_score,
-        "div_color": d_color,
-        "price_delta": price_delta,
-        "oi_delta": oi_delta
+        "flow": flow, "flow_score": f_score, "flow_color": f_color,
+        "divergence": divergence, "div_score": d_score, "div_color": d_color
     }
