@@ -7,11 +7,11 @@ import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from data.dhan_client import DhanMarketData
-from analytics.signals import analyze_market
 from analytics.institutional import calculate_exposures
 from analytics.smart_money import analyze_smart_money
 from analytics.volatility import analyze_volatility
-from ui.components import render_gauge_chart, render_oi_heatmap
+from analytics.decision_engine import generate_institutional_decision
+from ui.components import render_oi_heatmap
 from core.database import init_db
 
 # --- FALLBACK IMPORTS ---
@@ -30,10 +30,10 @@ if 'db_initialized' not in st.session_state:
     st.session_state.db_initialized = True
 
 @st.cache_resource
-def get_dhan_client_v12():
+def get_dhan_client_v13():
     return DhanMarketData()
 
-client = get_dhan_client_v12()
+client = get_dhan_client_v13()
 
 # --- SIDEBAR CONTROLS ---
 st.sidebar.title("⚙️ Engine Controls")
@@ -72,20 +72,22 @@ overall_pcr, atm_pcr = calculate_advanced_pcr(df_filtered, ltp)
 max_pain = calculate_max_pain(df_filtered)
 exposures = calculate_exposures(df_filtered, ltp)
 volatility = analyze_volatility(df_filtered, ltp, expiry_input)
-analysis = analyze_market(ltp, df_filtered, max_pain, overall_pcr, atm_pcr)
 
-# --- STATE MEMORY (BASELINE TRACKING) ---
+# --- STATE MEMORY ---
 current_total_oi = df_filtered['CE_OI'].sum() + df_filtered['PE_OI'].sum()
-
 if 'baseline' not in st.session_state:
-    st.session_state.baseline = {
-        'ltp': ltp, 'oi': current_total_oi, 'pcr': overall_pcr, 'time': time.time()
-    }
+    st.session_state.baseline = {'ltp': ltp, 'oi': current_total_oi, 'pcr': overall_pcr, 'time': time.time()}
     
 smart_money = analyze_smart_money(
     current_price=ltp, prev_price=st.session_state.baseline['ltp'],
     current_oi=current_total_oi, prev_oi=st.session_state.baseline['oi'],
     current_pcr=overall_pcr, prev_pcr=st.session_state.baseline['pcr']
+)
+
+# --- DECISION ENGINE ---
+decision = generate_institutional_decision(
+    ltp, overall_pcr, exposures['net_gex'], exposures['net_dex'], 
+    volatility['expected_move'], max_pain, smart_money['flow']
 )
 
 # ==========================================
@@ -99,6 +101,15 @@ st.markdown("""
     .pos-gex { color: #00E676; }
     .neg-gex { color: #FF3D00; }
     .sm-card { padding: 15px; border-radius: 10px; background-color: #1E1E2E; border: 1px solid #333; text-align: center; height: 100%;}
+    
+    .trade-setup { background-color: #161824; border: 1px solid #333; border-radius: 8px; padding: 15px; margin-top: 10px; }
+    .trade-grid { display: flex; justify-content: space-between; text-align: center; margin-top: 15px; }
+    .trade-box { flex: 1; margin: 0 5px; background: #222536; padding: 10px; border-radius: 6px; }
+    .trade-label { font-size: 0.8em; color: #888; text-transform: uppercase; }
+    .trade-value { font-size: 1.3em; font-weight: bold; color: #FFF; }
+    
+    .prob-bar-container { width: 100%; background-color: #222; border-radius: 5px; margin-top: 5px; height: 18px; }
+    .prob-bar { height: 100%; border-radius: 5px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -110,67 +121,75 @@ with r1: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Spot
 with r2: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>PCR</div><div class='ribbon-val'>{overall_pcr:.2f}</div></div>", unsafe_allow_html=True)
 with r3: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Max Pain</div><div class='ribbon-val'>₹{max_pain:,.0f}</div></div>", unsafe_allow_html=True)
 with r4: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Net GEX</div><div class='ribbon-val {'pos-gex' if exposures['net_gex'] > 0 else 'neg-gex'}'>{exposures['net_gex']/1e7:,.1f} Cr</div></div>", unsafe_allow_html=True)
-with r5: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Gamma Flip</div><div class='ribbon-val'>₹{exposures['gamma_flip']:,.0f}</div></div>", unsafe_allow_html=True)
+with r5: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Expected Move</div><div class='ribbon-val'>±{volatility['expected_move']:.0f}</div></div>", unsafe_allow_html=True)
 with r6: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Dealer Regime</div><div class='ribbon-val' style='font-size:1.1em;'>{'Long Gamma' if exposures['net_gex'] > 0 else 'Short Gamma'}</div></div>", unsafe_allow_html=True)
 with r7: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Hedging</div><div class='ribbon-val' style='font-size:1.1em;'>{'Bullish' if exposures['net_dex'] < 0 else 'Bearish'}</div></div>", unsafe_allow_html=True)
 
 st.markdown("---")
 
 # ==========================================
-# MIDDLE ROW 1: INSTITUTIONAL METRICS
+# MIDDLE ROW: TRADE EXECUTION & PROBABILITY
 # ==========================================
-sm1, sm2, sm3, sm4 = st.columns(4)
-with sm1:
-    st.markdown(f"""
-    <div class='sm-card'>
-        <div style='color: #888; font-size: 0.9em; letter-spacing: 1px;'>SMART MONEY FLOW</div>
-        <div style='color: {smart_money["flow_color"]}; font-size: 1.6em; font-weight: bold; margin-top: 10px;'>{smart_money["flow"]}</div>
-        <div style='color: #AAA; font-size: 0.85em;'>Confidence: {smart_money["flow_score"]}%</div>
-    </div>
-    """, unsafe_allow_html=True)
-with sm2:
-    st.markdown(f"""
-    <div class='sm-card'>
-        <div style='color: #888; font-size: 0.9em; letter-spacing: 1px;'>DIVERGENCE DETECTOR</div>
-        <div style='color: {smart_money["div_color"]}; font-size: 1.3em; font-weight: bold; padding-top: 10px;'>{smart_money["divergence"]}</div>
-        <div style='color: #AAA; font-size: 0.85em;'>Confidence: {smart_money["div_score"]}%</div>
-    </div>
-    """, unsafe_allow_html=True)
-with sm3: 
-    st.markdown(f"""
-    <div class='sm-card'>
-        <div style='color: #888; font-size: 0.9em; letter-spacing: 1px;'>EXPECTED MOVE (±)</div>
-        <div style='color: #FFF; font-size: 1.8em; font-weight: bold; margin-top: 5px;'>{volatility["expected_move"]:.0f} Pts</div>
-        <div style='color: #AAA; font-size: 0.85em;'>Bounds: {ltp - volatility["expected_move"]:.0f} - {ltp + volatility["expected_move"]:.0f}</div>
-    </div>
-    """, unsafe_allow_html=True)
-with sm4: 
-    st.markdown(f"""
-    <div class='sm-card'>
-        <div style='color: #888; font-size: 0.9em; letter-spacing: 1px;'>VOLATILITY REGIME</div>
-        <div style='color: {volatility["color"]}; font-size: 1.4em; font-weight: bold; padding-top: 10px;'>{volatility["regime"]}</div>
-        <div style='color: {volatility["color"]}; font-size: 0.85em;'>IV: {volatility["atm_iv"]:.1f}% | Risk: {volatility["crush_risk"]}</div>
-    </div>
-    """, unsafe_allow_html=True)
+m1, m2, m3 = st.columns([1.2, 2.3, 1.5])
 
-# ==========================================
-# MIDDLE ROW 2: AI DECISION ENGINE & GAUGES
-# ==========================================
-st.markdown("<br>", unsafe_allow_html=True)
-c_g1, c_g2, c_sig = st.columns([1,1,2])
-
-with c_g1: st.plotly_chart(render_gauge_chart(analysis['confluence'], "AI Confluence Score"), use_container_width=True)
-with c_g2: st.plotly_chart(render_gauge_chart(analysis['confidence'], "Win Probability %"), use_container_width=True)
-
-with c_sig:
-    color = "#00E676" if "CE" in analysis['recommendation'] else ("#FF3D00" if "PE" in analysis['recommendation'] else "#FFC107")
+with m1:
     st.markdown(f"""
-    <div style="padding: 20px; border-radius: 10px; background-color: #1E1E2E; border-left: 5px solid {color}; height: 100%;">
-        <h3 style="margin-top: 0; color: {color};">Trade Setup: {analysis['recommendation']}</h3>
-        <p style="color: #AAA;"><b>Market Regime:</b> {analysis['regime']} | <b>Risk Profile:</b> {analysis['risk']}</p>
-        <p style="color: #AAA;"><b>Dealer Positioning:</b> {exposures['dealer_regime']} | <b>Smart Money:</b> {smart_money['flow']}</p>
+    <div class='sm-card'>
+        <div style='color: #888; font-size: 0.9em; letter-spacing: 1px;'>INSTITUTIONAL SCORE</div>
+        <div style='color: {decision["color"]}; font-size: 3.5em; font-weight: bold; margin-top: 10px;'>{decision["score"]}</div>
+        <div style='color: #AAA; font-size: 0.9em;'>Max Conviction Index</div>
         <hr style="border-color: #333;">
-        <div style="font-size: 0.95em; line-height: 1.6;">{analysis['reason']}</div>
+        <div style='color: {smart_money["flow_color"]}; font-size: 1.1em; font-weight: bold;'>{smart_money["flow"]}</div>
+        <div style='color: {smart_money["div_color"]}; font-size: 0.9em;'>{smart_money["divergence"]}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with m2:
+    st.markdown(f"""
+    <div class='trade-setup'>
+        <h3 style='margin:0; color:{decision["color"]};'>{decision["signal"]}</h3>
+        <p style='margin:0; color:#888; font-size:0.9em;'>Algorithmic Trade Recommendation based on Volatility Expected Move</p>
+        
+        <div class='trade-grid'>
+            <div class='trade-box'>
+                <div class='trade-label'>Entry Level</div>
+                <div class='trade-value'>₹{decision["entry"]:,.0f}</div>
+            </div>
+            <div class='trade-box'>
+                <div class='trade-label'>Stop Loss</div>
+                <div style='color:#FF3D00;' class='trade-value'>₹{decision["sl"]:,.0f}</div>
+            </div>
+            <div class='trade-box'>
+                <div class='trade-label'>Target</div>
+                <div style='color:#00E676;' class='trade-value'>₹{decision["target"]:,.0f}</div>
+            </div>
+            <div class='trade-box'>
+                <div class='trade-label'>Risk/Reward</div>
+                <div class='trade-value'>{decision["rr"]}</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with m3:
+    st.markdown(f"""
+    <div class='sm-card' style='text-align: left; padding: 20px;'>
+        <div style='color: #888; font-size: 0.9em; letter-spacing: 1px; text-align: center; margin-bottom: 15px;'>MARKET PROBABILITIES</div>
+        
+        <div style='margin-bottom: 10px;'>
+            <span style='color: #00E676; font-weight: bold;'>BULLISH ({decision["bull_prob"]}%)</span>
+            <div class='prob-bar-container'><div class='prob-bar' style='width: {decision["bull_prob"]}%; background-color: #00E676;'></div></div>
+        </div>
+        
+        <div style='margin-bottom: 10px;'>
+            <span style='color: #FFC107; font-weight: bold;'>SIDEWAYS ({decision["side_prob"]}%)</span>
+            <div class='prob-bar-container'><div class='prob-bar' style='width: {decision["side_prob"]}%; background-color: #FFC107;'></div></div>
+        </div>
+        
+        <div style='margin-bottom: 10px;'>
+            <span style='color: #FF3D00; font-weight: bold;'>BEARISH ({decision["bear_prob"]}%)</span>
+            <div class='prob-bar-container'><div class='prob-bar' style='width: {decision["bear_prob"]}%; background-color: #FF3D00;'></div></div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
