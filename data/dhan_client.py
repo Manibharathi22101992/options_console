@@ -2,7 +2,6 @@ import time
 import pandas as pd
 import dhanhq
 import inspect
-from pprint import pformat
 from dhanhq import dhanhq as DhanHQClient
 from core.config import CLIENT_ID, ACCESS_TOKEN, logger
 
@@ -53,11 +52,10 @@ class DhanMarketData:
                     expiry=expiry_date
                 )
                 
-                # --- FULL RAW JSON INSPECTION ---
-                logger.info("========== FULL DHAN API RESPONSE ==========")
-                logger.info(pformat(response))
-                logger.info("============================================")
-                logger.info(f"Expiry Used: {expiry_date}")
+                # --- STRICT DIAGNOSTIC LOGGING ---
+                logger.info("========== FULL RESPONSE ==========")
+                logger.info(response)
+                logger.info("========== DATA ==========")
                 
                 if not response or response.get("status") != "success":
                     logger.error(f"Option Chain API Failed. Response: {response}")
@@ -65,11 +63,19 @@ class DhanMarketData:
                     continue
                 
                 data = response.get("data")
+                logger.info(f"Type(data): {type(data)}")
+                logger.info(f"Data Object: {data}")
+                
                 if isinstance(data, dict):
                     logger.info(f"Data Keys: {list(data.keys())}")
                 
+                if data is None:
+                    raise ValueError("Response contains no 'data' field")
+                if not data:
+                    raise ValueError(f"Empty data returned by Dhan: {response}")
+
                 ltp = response.get("last_price", data.get("last_price", 0) if isinstance(data, dict) else 0)
-                return ltp, response
+                return ltp, data
                 
             except Exception:
                 logger.exception("CRITICAL: option_chain call raised an exception")
@@ -78,24 +84,29 @@ class DhanMarketData:
             
         return None, None
 
-    def process_oc_to_dataframe(self, response):
+    def process_oc_to_dataframe(self, data):
         """
-        Generalized Normalization Engine: 
-        Safely unpacks any response layout and maps alternate schema names to standard columns.
+        Processes the extracted 'data' object directly. 
+        Will be refined once the exact printed object structure appears in logs.
         """
-        if not response:
+        if not data:
+            logger.error("process_oc_to_dataframe received empty data.")
             return pd.DataFrame()
 
-        payload = response
-        if isinstance(response, dict):
-            payload = response.get("data", response)
-            if isinstance(payload, dict):
-                if "oc" in payload:
-                    payload = payload["oc"]
-                elif "records" in payload:
-                    payload = payload["records"]
-                elif "optionChain" in payload:
-                    payload = payload["optionChain"]
+        # Handle double-wrapped data if Dhan nests it again
+        if isinstance(data, dict) and "data" in data and isinstance(data["data"], (dict, list)):
+            logger.warning("Detected double-nested 'data' field. Unpacking...")
+            data = data["data"]
+
+        # Support if 'oc' key holds the dictionary
+        payload = data
+        if isinstance(data, dict):
+            if "oc" in data:
+                payload = data["oc"]
+            elif "records" in data:
+                payload = data["records"]
+            elif "optionChain" in data:
+                payload = data["optionChain"]
 
         rows = []
 
@@ -146,7 +157,7 @@ class DhanMarketData:
         df = pd.DataFrame(rows)
         
         if df.empty:
-            logger.error("Normalization produced an empty DataFrame. Check raw response logs above.")
+            logger.error("Parsing produced an empty DataFrame. Inspect the 'Data Object' log above.")
             return pd.DataFrame()
             
         logger.info(f"Successfully normalized columns: {df.columns.tolist()}")
