@@ -11,6 +11,7 @@ from analytics.institutional import calculate_exposures
 from analytics.smart_money import analyze_smart_money
 from analytics.volatility import analyze_volatility
 from analytics.decision_engine import generate_institutional_decision
+from analytics.alerts import check_smart_alerts, send_telegram_alert
 from ui.components import render_oi_heatmap
 from core.database import init_db
 
@@ -30,10 +31,10 @@ if 'db_initialized' not in st.session_state:
     st.session_state.db_initialized = True
 
 @st.cache_resource
-def get_dhan_client_v14():
+def get_dhan_client_v16():
     return DhanMarketData()
 
-client = get_dhan_client_v14()
+client = get_dhan_client_v16()
 
 # --- SIDEBAR CONTROLS ---
 st.sidebar.title("⚙️ Engine Controls")
@@ -48,7 +49,9 @@ refresh_rate = st.sidebar.slider("Refresh Speed (Seconds)", min_value=3, max_val
 if st.sidebar.button("🔄 Reset Baseline Memory"):
     if 'baseline' in st.session_state:
         del st.session_state['baseline']
-    st.sidebar.success("Memory Reset!")
+    if 'active_alerts' in st.session_state:
+        st.session_state.active_alerts = []
+    st.sidebar.success("Memory & Alerts Reset!")
 
 # --- CORE ENGINE LOOP ---
 ltp, raw_response = client.get_live_option_chain(expiry_date=expiry_input)
@@ -84,7 +87,6 @@ smart_money = analyze_smart_money(
     current_pcr=overall_pcr, prev_pcr=st.session_state.baseline['pcr']
 )
 
-# --- DECISION ENGINE ---
 decision = generate_institutional_decision(
     ltp, overall_pcr, exposures['net_gex'], exposures['net_dex'], 
     volatility['expected_move'], max_pain, smart_money['flow']
@@ -201,6 +203,31 @@ with c_table:
     st.markdown("### Institutional Greeks & Volume")
     atm_df = df_filtered.iloc[(df_filtered['Strike'] - ltp).abs().argsort()[:7]].sort_values('Strike')
     st.dataframe(atm_df[['Strike', 'CE_LTP', 'CE_Volume', 'CE_Gamma', 'PE_Gamma', 'PE_Volume', 'PE_LTP']], hide_index=True, use_container_width=True)
+
+# ==========================================
+# PHASE 12: SMART ALERTS NOTIFICATION SYSTEM
+# ==========================================
+if 'active_alerts' not in st.session_state:
+    st.session_state.active_alerts = []
+
+current_alerts = check_smart_alerts(
+    ltp, st.session_state.baseline['ltp'], exposures['gamma_flip'], 
+    smart_money['flow'], smart_money['divergence'], overall_pcr, st.session_state.baseline['pcr']
+)
+
+for alert in current_alerts:
+    # Only notify if this exact alert hasn't been fired recently
+    if alert['msg'] not in st.session_state.active_alerts:
+        # 1. Show UI Popup
+        st.toast(alert['msg'], icon=alert['icon'])
+        # 2. Push to Telegram
+        send_telegram_alert(alert['msg'], alert['icon'])
+        
+        st.session_state.active_alerts.append(alert['msg'])
+
+# Keep alert memory small so it resets appropriately over time
+if len(st.session_state.active_alerts) > 10:
+    st.session_state.active_alerts = st.session_state.active_alerts[-5:]
 
 if live_feed:
     time.sleep(refresh_rate)
