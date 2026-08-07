@@ -74,20 +74,18 @@ class DhanMarketData:
             except Exception:
                 logger.exception("CRITICAL: option_chain call raised an exception")
             
-            time.sleep(2 ** adapter_backoff := (2 ** attempt))
+            time.sleep(2 ** attempt)
             
         return None, None
 
     def process_oc_to_dataframe(self, response):
         """
         Generalized Normalization Engine: 
-        Safely unpacks any response layout (dict, list, nested 'oc', 'records', etc.)
-        and maps alternate schema names (strikePrice, callOptions, etc.) to standard columns.
+        Safely unpacks any response layout and maps alternate schema names to standard columns.
         """
         if not response:
             return pd.DataFrame()
 
-        # Extract the inner data/oc container flexibly
         payload = response
         if isinstance(response, dict):
             payload = response.get("data", response)
@@ -101,7 +99,6 @@ class DhanMarketData:
 
         rows = []
 
-        # Case 1: Payload is a dictionary mapping strikes to data
         if isinstance(payload, dict):
             for strike_key, val in payload.items():
                 if strike_key in ["last_price", "spot_price", "ltp"] or not isinstance(val, dict):
@@ -126,7 +123,6 @@ class DhanMarketData:
                     "PE_Delta": pe.get("greeks", {}).get("delta", pe.get("delta", 0)) if isinstance(pe.get("greeks"), dict) else pe.get("delta", 0)
                 })
 
-        # Case 2: Payload is a list of strike records
         elif isinstance(payload, list):
             for item in payload:
                 if not isinstance(item, dict):
