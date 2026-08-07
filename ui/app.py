@@ -13,6 +13,7 @@ from analytics.volatility import analyze_volatility
 from analytics.decision_engine import generate_institutional_decision
 from analytics.market_structure import analyze_market_structure
 from analytics.alerts import check_smart_alerts, send_telegram_alert
+from analytics.volume_profile import calculate_volume_profile
 from ui.components import render_oi_heatmap
 from core.database import init_db
 
@@ -31,10 +32,10 @@ if 'db_initialized' not in st.session_state:
     st.session_state.db_initialized = True
 
 @st.cache_resource
-def get_dhan_client_v20():
+def get_dhan_client_v21():
     return DhanMarketData()
 
-client = get_dhan_client_v20()
+client = get_dhan_client_v21()
 
 st.sidebar.title("⚙️ Engine Controls")
 ist_now = datetime.now(ZoneInfo("Asia/Kolkata"))
@@ -68,22 +69,32 @@ if ltp == 0:
 
 df_filtered = df[(df['Strike'] >= ltp - 600) & (df['Strike'] <= ltp + 600)].copy()
 
+# Execute Core Engines
 overall_pcr, atm_pcr = calculate_advanced_pcr(df_filtered, ltp)
 max_pain = calculate_max_pain(df_filtered)
 exposures = calculate_exposures(df_filtered, ltp)
 
+# Bootstrapping the Baseline (Now requires IV)
 current_total_oi = df_filtered['CE_OI'].sum() + df_filtered['PE_OI'].sum()
-if 'baseline' not in st.session_state:
-    st.session_state.baseline = {'ltp': ltp, 'oi': current_total_oi, 'pcr': overall_pcr, 'time': time.time()}
 
-# Pass baseline LTP into volatility engine for anchored expected move
-volatility = analyze_volatility(df_filtered, ltp, st.session_state.baseline['ltp'], expiry_input)
-    
+# Temporarily extract baseline LTP to feed the Volatility Engine
+temp_baseline_ltp = st.session_state.baseline['ltp'] if 'baseline' in st.session_state else ltp
+volatility = analyze_volatility(df_filtered, ltp, temp_baseline_ltp, expiry_input)
+
+# Finalize Baseline Initialization
+if 'baseline' not in st.session_state:
+    st.session_state.baseline = {'ltp': ltp, 'oi': current_total_oi, 'pcr': overall_pcr, 'iv': volatility['atm_iv'], 'time': time.time()}
+
+# Pass IV to Smart Money (Sprint 7)
 smart_money = analyze_smart_money(
     current_price=ltp, prev_price=st.session_state.baseline['ltp'],
     current_oi=current_total_oi, prev_oi=st.session_state.baseline['oi'],
-    current_pcr=overall_pcr, prev_pcr=st.session_state.baseline['pcr']
+    current_pcr=overall_pcr, prev_pcr=st.session_state.baseline['pcr'],
+    current_iv=volatility['atm_iv'], prev_iv=st.session_state.baseline['iv']
 )
+
+# Run Volume Profile (Sprint 6)
+vp = calculate_volume_profile(df_filtered)
 
 decision = generate_institutional_decision(
     ltp, overall_pcr, exposures['net_gex'], exposures['net_dex'], 
@@ -110,6 +121,8 @@ st.markdown("""
 .trade-value { font-size: 1.3em; font-weight: bold; color: #FFF; }
 .prob-bar-container { width: 100%; background-color: #222; border-radius: 5px; margin-top: 5px; height: 18px; }
 .prob-bar { height: 100%; border-radius: 5px; }
+.vp-panel { display: flex; justify-content: space-between; background: #161824; padding: 15px; border-radius: 8px; border: 1px solid #333; margin-bottom: 20px;}
+.vp-col { text-align: center; flex: 1; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -196,6 +209,26 @@ with m3:
 """, unsafe_allow_html=True)
 
 st.markdown("---")
+
+# ==========================================
+# SPRINT 6: VOLUME PROFILE RIBBON
+# ==========================================
+st.markdown(f"""
+<div class='vp-panel'>
+<div class='vp-col'>
+<span style='color:#888; font-size:0.85em; letter-spacing:1px;'>VALUE AREA LOW (VAL)</span><br>
+<span style='color:#FF3D00; font-size:1.5em; font-weight:bold;'>₹{vp['val']:,.0f}</span>
+</div>
+<div class='vp-col' style='border-left: 1px solid #333; border-right: 1px solid #333;'>
+<span style='color:#888; font-size:0.85em; letter-spacing:1px;'>POINT OF CONTROL (POC)</span><br>
+<span style='color:#FFF; font-size:1.8em; font-weight:bold;'>₹{vp['poc']:,.0f}</span>
+</div>
+<div class='vp-col'>
+<span style='color:#888; font-size:0.85em; letter-spacing:1px;'>VALUE AREA HIGH (VAH)</span><br>
+<span style='color:#00E676; font-size:1.5em; font-weight:bold;'>₹{vp['vah']:,.0f}</span>
+</div>
+</div>
+""", unsafe_allow_html=True)
 
 c_chart, c_table = st.columns([2, 2])
 with c_chart: 
