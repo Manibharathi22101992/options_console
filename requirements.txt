@@ -1,4 +1,6 @@
 streamlit
-dhanhq
 pandas
+numpy
 plotly
+requests
+PyYAML
