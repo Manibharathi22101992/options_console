@@ -135,70 +135,77 @@ st.markdown("---")
 # ==========================================
 # MIDDLE ROW: TRADE EXECUTION & PROBABILITY
 # ==========================================
-m1, m2, m3 = st.columns([1.5, 2.3, 1.2])
+m1, m2, m3 = st.columns([1.5, 2.5, 1.2])
 
 with m1:
     st.markdown(f"""
 <div class='sm-card'>
-<div style='color: #888; font-size: 0.9em; letter-spacing: 1px;'>MARKET STRUCTURE</div>
-<div style='color: {structure["color"]}; font-size: 1.5em; font-weight: bold; margin-top: 10px;'>{structure["regime"]}</div>
-<div style='color: #AAA; font-size: 0.9em;'>Confidence: {structure["confidence"]}%</div>
-<hr style="border-color: #333; margin: 15px 0;">
-<div style='color: #888; font-size: 0.8em; text-transform: uppercase;'>Institutional Score</div>
-<div style='color: {decision["color"]}; font-size: 2.5em; font-weight: bold;'>{decision["score"]}</div>
-<div style='margin-top: 10px; padding: 5px; background: rgba(0,0,0,0.2); border-radius: 5px;'>
-<div style='color: {smart_money["flow_color"]}; font-size: 0.9em; font-weight: bold;'>{smart_money["flow"]}</div>
-<div style='color: {smart_money["div_color"]}; font-size: 0.8em;'>{smart_money["divergence"]}</div>
-</div>
+    <div style='color: #888; font-size: 0.9em; letter-spacing: 1px;'>MARKET STRUCTURE</div>
+    <div style='color: {structure["color"]}; font-size: 1.5em; font-weight: bold; margin-top: 10px;'>{structure["regime"]}</div>
+    <div style='color: #AAA; font-size: 0.9em;'>Confidence: {structure["confidence"]}%</div>
+    
+    <hr style="border-color: #333; margin: 15px 0;">
+    
+    <div style='color: #888; font-size: 0.8em; text-transform: uppercase;'>Institutional Score (0-100)</div>
+    <div style='color: {decision["color"]}; font-size: 3em; font-weight: bold;'>{decision["score"]}</div>
+    <div style='color: {decision["color"]}; font-size: 1em; margin-bottom: 10px;'>{decision["signal"].split('(')[-1].replace(')','')}</div>
+    
+    <div style='padding: 5px; background: rgba(0,0,0,0.2); border-radius: 5px;'>
+        <div style='color: {smart_money["flow_color"]}; font-size: 0.9em; font-weight: bold;'>{smart_money["flow"]}</div>
+        <div style='color: {smart_money["div_color"]}; font-size: 0.8em;'>{smart_money["divergence"]}</div>
+    </div>
 </div>
 """, unsafe_allow_html=True)
 
 with m2:
     st.markdown(f"""
 <div class='trade-setup'>
-<h3 style='margin:0; color:{decision["color"]};'>{decision["signal"]}</h3>
-<p style='margin:0; color:#888; font-size:0.9em;'>Algorithmic Trade Recommendation based on Volatility Expected Move</p>
-<div class='trade-grid'>
-<div class='trade-box'>
-<div class='trade-label'>Entry Level</div>
-<div class='trade-value'>₹{decision["entry"]:,.0f}</div>
-</div>
-<div class='trade-box'>
-<div class='trade-label'>Stop Loss</div>
-<div style='color:#FF3D00;' class='trade-value'>₹{decision["sl"]:,.0f}</div>
-</div>
-<div class='trade-box'>
-<div class='trade-label'>Target</div>
-<div style='color:#00E676;' class='trade-value'>₹{decision["target"]:,.0f}</div>
-</div>
-<div class='trade-box'>
-<div class='trade-label'>Risk/Reward</div>
-<div class='trade-value'>{decision["rr"]}</div>
-</div>
-</div>
+    <h3 style='margin:0; color:{decision["color"]};'>{decision["signal"]}</h3>
+    <p style='margin:0; color:#888; font-size:0.9em;'>Algorithmic Trade Recommendation (Based on BS Expected Move)</p>
+    
+    <div class='trade-grid' style='margin-top: 20px;'>
+        <div class='trade-box'>
+            <div class='trade-label'>Entry</div>
+            <div class='trade-value'>₹{decision["entry"]:,.0f}</div>
+        </div>
+        <div class='trade-box'>
+            <div class='trade-label'>Stop Loss</div>
+            <div style='color:#FF3D00;' class='trade-value'>₹{decision["sl"]:,.0f}</div>
+        </div>
+        <div class='trade-box'>
+            <div class='trade-label'>Target 1</div>
+            <div style='color:#00E676;' class='trade-value'>₹{decision["target_1"]:,.0f}</div>
+        </div>
+        <div class='trade-box'>
+            <div class='trade-label'>Target 2</div>
+            <div style='color:#00E676;' class='trade-value'>₹{decision["target_2"]:,.0f}</div>
+        </div>
+        <div class='trade-box'>
+            <div class='trade-label'>Risk:Reward</div>
+            <div class='trade-value'>{decision["rr"]}</div>
+        </div>
+    </div>
 </div>
 """, unsafe_allow_html=True)
 
 with m3:
     st.markdown(f"""
 <div class='sm-card' style='text-align: left; padding: 20px;'>
-<div style='color: #888; font-size: 0.9em; letter-spacing: 1px; text-align: center; margin-bottom: 15px;'>PROBABILITIES</div>
-<div style='margin-bottom: 10px;'>
-<span style='color: #00E676; font-weight: bold; font-size: 0.9em;'>BULLISH ({decision["bull_prob"]}%)</span>
-<div class='prob-bar-container'><div class='prob-bar' style='width: {decision["bull_prob"]}%; background-color: #00E676;'></div></div>
-</div>
-<div style='margin-bottom: 10px;'>
-<span style='color: #FFC107; font-weight: bold; font-size: 0.9em;'>SIDEWAYS ({decision["side_prob"]}%)</span>
-<div class='prob-bar-container'><div class='prob-bar' style='width: {decision["side_prob"]}%; background-color: #FFC107;'></div></div>
-</div>
-<div style='margin-bottom: 10px;'>
-<span style='color: #FF3D00; font-weight: bold; font-size: 0.9em;'>BEARISH ({decision["bear_prob"]}%)</span>
-<div class='prob-bar-container'><div class='prob-bar' style='width: {decision["bear_prob"]}%; background-color: #FF3D00;'></div></div>
-</div>
+    <div style='color: #888; font-size: 0.9em; letter-spacing: 1px; text-align: center; margin-bottom: 15px;'>PROBABILITIES</div>
+    <div style='margin-bottom: 10px;'>
+        <span style='color: #00E676; font-weight: bold; font-size: 0.9em;'>BULLISH ({decision["bull_prob"]}%)</span>
+        <div class='prob-bar-container'><div class='prob-bar' style='width: {decision["bull_prob"]}%; background-color: #00E676;'></div></div>
+    </div>
+    <div style='margin-bottom: 10px;'>
+        <span style='color: #FFC107; font-weight: bold; font-size: 0.9em;'>SIDEWAYS ({decision["side_prob"]}%)</span>
+        <div class='prob-bar-container'><div class='prob-bar' style='width: {decision["side_prob"]}%; background-color: #FFC107;'></div></div>
+    </div>
+    <div style='margin-bottom: 10px;'>
+        <span style='color: #FF3D00; font-weight: bold; font-size: 0.9em;'>BEARISH ({decision["bear_prob"]}%)</span>
+        <div class='prob-bar-container'><div class='prob-bar' style='width: {decision["bear_prob"]}%; background-color: #FF3D00;'></div></div>
+    </div>
 </div>
 """, unsafe_allow_html=True)
-
-st.markdown("---")
 
 # ==========================================
 # BOTTOM ROW: HEATMAP & GREEKS
