@@ -1,53 +1,43 @@
-def analyze_market_structure(net_gex, pcr, flow):
+def analyze_market_structure(net_gex, pcr, flow, ltp, baseline_ltp, total_vol):
     """
-    Phase 1: Market Structure Engine
-    Determines if today is a Trend Day, Range Day, Short Covering, etc.
-    Positive Gamma = Dealers suppress volatility (Range/Mean Reversion)
-    Negative Gamma = Dealers amplify volatility (Trend/Breakout)
+    PHASE 1: Market Regime & Trend Strength Classifier
     """
-    confidence = 50
-    regime = "Consolidation (Range Day)"
-    color = "#FFC107" # Yellow
+    # Trend Strength (0-100) Formula
+    price_momentum = abs((ltp - baseline_ltp) / baseline_ltp) * 10000 
+    pcr_strength = abs(pcr - 1.0) * 50
+    gex_strength = min(30, abs(net_gex) / 10000000)
+    
+    trend_strength = int(min(100, price_momentum + pcr_strength + gex_strength + (total_vol/1000000)))
+    
+    if trend_strength > 80: trend_label = "Very Strong"
+    elif trend_strength > 60: trend_label = "Strong"
+    elif trend_strength > 40: trend_label = "Moderate"
+    else: trend_label = "Weak"
 
+    # Regime Classification
+    confidence = min(99, trend_strength + 20)
+    
     if net_gex > 0:
-        # Market Makers are Long Gamma (Selling rips, buying dips -> Range Bound)
-        if pcr > 1.2:
-            regime = "Mean Reversion (Bullish Bias)"
-            confidence = 75
-            color = "#00E676"
-        elif pcr < 0.8:
-            regime = "Mean Reversion (Bearish Bias)"
-            confidence = 75
-            color = "#FF3D00"
+        if pcr > 1.2 and ltp > baseline_ltp:
+            regime, color = "Mean Reversion (Bullish)", "#00E676"
+        elif pcr < 0.8 and ltp < baseline_ltp:
+            regime, color = "Mean Reversion (Bearish)", "#FF3D00"
         else:
-            regime = "Choppy / Range Bound"
-            confidence = 85
-            color = "#FFC107"
+            regime, color = "Gamma Pinning (Range Day)", "#FFC107"
     else:
-        # Market Makers are Short Gamma (Buying rips, selling dips -> Trend/Breakout)
-        if pcr > 1.0 and "Long" in flow:
-            regime = "Trend Day (Bullish)"
-            confidence = 88
-            color = "#00E676"
-        elif pcr < 1.0 and "Short" in flow:
-            regime = "Trend Day (Bearish)"
-            confidence = 88
-            color = "#FF3D00"
-        elif "Covering" in flow:
-            regime = "Short Covering Rally"
-            confidence = 82
-            color = "#00E676"
-        elif "Unwinding" in flow:
-            regime = "Long Unwinding (Bearish)"
-            confidence = 82
-            color = "#FF3D00"
+        if pcr > 1.0 and "Long" in flow and ltp > baseline_ltp:
+            regime, color = "Trend Day (Up)", "#00E676"
+        elif pcr < 1.0 and "Short" in flow and ltp < baseline_ltp:
+            regime, color = "Trend Day (Down)", "#FF3D00"
+        elif "Unwinding" in flow or "Covering" in flow:
+            regime, color = "Volatility Expansion", "#FFC107"
         else:
-            regime = "Volatility Expansion (Breakout Pending)"
-            confidence = 70
-            color = "#FFC107"
+            regime, color = "Breakout Watch", "#FFC107"
 
     return {
         "regime": regime,
-        "confidence": confidence,
-        "color": color
+        "color": color,
+        "trend_strength": trend_strength,
+        "trend_label": trend_label,
+        "confidence": confidence
     }
