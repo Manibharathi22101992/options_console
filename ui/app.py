@@ -16,7 +16,6 @@ from analytics.alerts import check_smart_alerts, send_telegram_alert
 from ui.components import render_oi_heatmap
 from core.database import init_db
 
-# --- FALLBACK IMPORTS ---
 try:
     from analytics.engine import calculate_advanced_pcr, calculate_max_pain
 except ImportError:
@@ -32,12 +31,11 @@ if 'db_initialized' not in st.session_state:
     st.session_state.db_initialized = True
 
 @st.cache_resource
-def get_dhan_client_v19():
+def get_dhan_client_v20():
     return DhanMarketData()
 
-client = get_dhan_client_v19()
+client = get_dhan_client_v20()
 
-# --- SIDEBAR CONTROLS ---
 st.sidebar.title("⚙️ Engine Controls")
 ist_now = datetime.now(ZoneInfo("Asia/Kolkata"))
 today_ist = ist_now.date()
@@ -54,7 +52,6 @@ if st.sidebar.button("🔄 Reset Baseline Memory"):
         st.session_state.active_alerts = []
     st.sidebar.success("Memory & Alerts Reset!")
 
-# --- CORE ENGINE LOOP ---
 ltp, raw_response = client.get_live_option_chain(expiry_date=expiry_input)
 if ltp is None or not raw_response:
     st.error(f"Waiting for Data... Market closed or {expiry_input} not available.")
@@ -71,16 +68,16 @@ if ltp == 0:
 
 df_filtered = df[(df['Strike'] >= ltp - 600) & (df['Strike'] <= ltp + 600)].copy()
 
-# --- RUN INSTITUTIONAL ENGINES ---
 overall_pcr, atm_pcr = calculate_advanced_pcr(df_filtered, ltp)
 max_pain = calculate_max_pain(df_filtered)
 exposures = calculate_exposures(df_filtered, ltp)
-volatility = analyze_volatility(df_filtered, ltp, expiry_input)
 
-# --- STATE MEMORY ---
 current_total_oi = df_filtered['CE_OI'].sum() + df_filtered['PE_OI'].sum()
 if 'baseline' not in st.session_state:
     st.session_state.baseline = {'ltp': ltp, 'oi': current_total_oi, 'pcr': overall_pcr, 'time': time.time()}
+
+# Pass baseline LTP into volatility engine for anchored expected move
+volatility = analyze_volatility(df_filtered, ltp, st.session_state.baseline['ltp'], expiry_input)
     
 smart_money = analyze_smart_money(
     current_price=ltp, prev_price=st.session_state.baseline['ltp'],
@@ -106,13 +103,11 @@ st.markdown("""
 .pos-gex { color: #00E676; }
 .neg-gex { color: #FF3D00; }
 .sm-card { padding: 15px; border-radius: 10px; background-color: #1E1E2E; border: 1px solid #333; text-align: center; height: 100%;}
-
 .trade-setup { background-color: #161824; border: 1px solid #333; border-radius: 8px; padding: 15px; margin-top: 10px; }
 .trade-grid { display: flex; justify-content: space-between; text-align: center; margin-top: 15px; }
 .trade-box { flex: 1; margin: 0 5px; background: #222536; padding: 10px; border-radius: 6px; }
 .trade-label { font-size: 0.8em; color: #888; text-transform: uppercase; }
 .trade-value { font-size: 1.3em; font-weight: bold; color: #FFF; }
-
 .prob-bar-container { width: 100%; background-color: #222; border-radius: 5px; margin-top: 5px; height: 18px; }
 .prob-bar { height: 100%; border-radius: 5px; }
 </style>
@@ -123,18 +118,15 @@ st.caption(f"IST: {ist_now.strftime('%H:%M:%S')} | Target Expiry: {expiry_input}
 
 r1, r2, r3, r4, r5, r6, r7 = st.columns(7)
 with r1: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Spot</div><div class='ribbon-val'>₹{ltp:,.0f}</div></div>", unsafe_allow_html=True)
-with r2: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>PCR</div><div class='ribbon-val'>{overall_pcr:.2f}</div></div>", unsafe_allow_html=True)
-with r3: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Max Pain</div><div class='ribbon-val'>₹{max_pain:,.0f}</div></div>", unsafe_allow_html=True)
+with r2: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Gamma Wall (Res)</div><div style='color:#FF3D00;' class='ribbon-val'>₹{exposures['gamma_wall']:,.0f}</div></div>", unsafe_allow_html=True)
+with r3: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Delta Wall</div><div style='color:#FFC107;' class='ribbon-val'>₹{exposures['delta_wall']:,.0f}</div></div>", unsafe_allow_html=True)
 with r4: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Net GEX</div><div class='ribbon-val {'pos-gex' if exposures['net_gex'] > 0 else 'neg-gex'}'>{exposures['net_gex']/1e7:,.1f} Cr</div></div>", unsafe_allow_html=True)
-with r5: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Expected Move</div><div class='ribbon-val'>±{volatility['expected_move']:.0f}</div></div>", unsafe_allow_html=True)
-with r6: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Dealer Regime</div><div class='ribbon-val' style='font-size:1.1em;'>{'Long Gamma' if exposures['net_gex'] > 0 else 'Short Gamma'}</div></div>", unsafe_allow_html=True)
+with r5: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Expected Range</div><div style='font-size:1.1em;' class='ribbon-val'>₹{volatility['lower_bound']:,.0f} - ₹{volatility['upper_bound']:,.0f}</div></div>", unsafe_allow_html=True)
+with r6: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Range Exhausted</div><div class='ribbon-val' style='font-size:1.2em;'>{volatility['position_pct']:.0f}%</div></div>", unsafe_allow_html=True)
 with r7: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Hedging</div><div class='ribbon-val' style='font-size:1.1em;'>{'Bullish' if exposures['net_dex'] < 0 else 'Bearish'}</div></div>", unsafe_allow_html=True)
 
 st.markdown("---")
 
-# ==========================================
-# MIDDLE ROW: TRADE EXECUTION & PROBABILITY
-# ==========================================
 m1, m2, m3 = st.columns([1.5, 2.5, 1.2])
 
 with m1:
@@ -205,9 +197,6 @@ with m3:
 
 st.markdown("---")
 
-# ==========================================
-# BOTTOM ROW: HEATMAP & GREEKS
-# ==========================================
 c_chart, c_table = st.columns([2, 2])
 with c_chart: 
     st.plotly_chart(render_oi_heatmap(df_filtered), use_container_width=True)
@@ -216,9 +205,6 @@ with c_table:
     atm_df = df_filtered.iloc[(df_filtered['Strike'] - ltp).abs().argsort()[:7]].sort_values('Strike')
     st.dataframe(atm_df[['Strike', 'CE_LTP', 'CE_Volume', 'CE_Gamma', 'PE_Gamma', 'PE_Volume', 'PE_LTP']], hide_index=True, use_container_width=True)
 
-# ==========================================
-# PHASE 12: SMART ALERTS NOTIFICATION SYSTEM
-# ==========================================
 if 'active_alerts' not in st.session_state:
     st.session_state.active_alerts = []
 
