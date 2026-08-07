@@ -32,10 +32,10 @@ if 'db_initialized' not in st.session_state:
     st.session_state.db_initialized = True
 
 @st.cache_resource
-def get_dhan_client_v21():
+def get_dhan_client_v22():
     return DhanMarketData()
 
-client = get_dhan_client_v21()
+client = get_dhan_client_v22()
 
 st.sidebar.title("⚙️ Engine Controls")
 ist_now = datetime.now(ZoneInfo("Asia/Kolkata"))
@@ -53,7 +53,14 @@ if st.sidebar.button("🔄 Reset Baseline Memory"):
         st.session_state.active_alerts = []
     st.sidebar.success("Memory & Alerts Reset!")
 
+# ==========================================
+# DIAGNOSTICS: API LATENCY TIMER
+# ==========================================
+api_start = time.time()
 ltp, raw_response = client.get_live_option_chain(expiry_date=expiry_input)
+api_end = time.time()
+api_latency_ms = (api_end - api_start) * 1000
+
 if ltp is None or not raw_response:
     st.error(f"Waiting for Data... Market closed or {expiry_input} not available.")
     st.stop()
@@ -69,23 +76,23 @@ if ltp == 0:
 
 df_filtered = df[(df['Strike'] >= ltp - 600) & (df['Strike'] <= ltp + 600)].copy()
 
-# Execute Core Engines
+# ==========================================
+# DIAGNOSTICS: MATH ENGINE TIMER
+# ==========================================
+calc_start = time.time()
+
 overall_pcr, atm_pcr = calculate_advanced_pcr(df_filtered, ltp)
 max_pain = calculate_max_pain(df_filtered)
 exposures = calculate_exposures(df_filtered, ltp)
 
-# Bootstrapping the Baseline (Now requires IV)
 current_total_oi = df_filtered['CE_OI'].sum() + df_filtered['PE_OI'].sum()
 
-# Temporarily extract baseline LTP to feed the Volatility Engine
 temp_baseline_ltp = st.session_state.baseline['ltp'] if 'baseline' in st.session_state else ltp
 volatility = analyze_volatility(df_filtered, ltp, temp_baseline_ltp, expiry_input)
 
-# Finalize Baseline Initialization
 if 'baseline' not in st.session_state:
     st.session_state.baseline = {'ltp': ltp, 'oi': current_total_oi, 'pcr': overall_pcr, 'iv': volatility['atm_iv'], 'time': time.time()}
 
-# Pass IV to Smart Money (Sprint 7)
 smart_money = analyze_smart_money(
     current_price=ltp, prev_price=st.session_state.baseline['ltp'],
     current_oi=current_total_oi, prev_oi=st.session_state.baseline['oi'],
@@ -93,7 +100,6 @@ smart_money = analyze_smart_money(
     current_iv=volatility['atm_iv'], prev_iv=st.session_state.baseline['iv']
 )
 
-# Run Volume Profile (Sprint 6)
 vp = calculate_volume_profile(df_filtered)
 
 decision = generate_institutional_decision(
@@ -102,6 +108,9 @@ decision = generate_institutional_decision(
 )
 
 structure = analyze_market_structure(exposures['net_gex'], overall_pcr, smart_money['flow'])
+
+calc_end = time.time()
+calc_latency_ms = (calc_end - calc_start) * 1000
 
 # ==========================================
 # VERSION 2 UI: TOP RIBBON
@@ -123,6 +132,8 @@ st.markdown("""
 .prob-bar { height: 100%; border-radius: 5px; }
 .vp-panel { display: flex; justify-content: space-between; background: #161824; padding: 15px; border-radius: 8px; border: 1px solid #333; margin-bottom: 20px;}
 .vp-col { text-align: center; flex: 1; }
+.health-footer { background: #0E1117; border: 1px solid #333; border-radius: 8px; padding: 12px; text-align: center; font-family: monospace; font-size: 0.9em; color: #888; margin-top: 30px; margin-bottom: 20px; }
+.health-ok { color: #00E676; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -210,9 +221,6 @@ with m3:
 
 st.markdown("---")
 
-# ==========================================
-# SPRINT 6: VOLUME PROFILE RIBBON
-# ==========================================
 st.markdown(f"""
 <div class='vp-panel'>
 <div class='vp-col'>
@@ -254,6 +262,19 @@ for alert in current_alerts:
 
 if len(st.session_state.active_alerts) > 10:
     st.session_state.active_alerts = st.session_state.active_alerts[-5:]
+
+# ==========================================
+# SPRINT 15: SYSTEM HEALTH FOOTER
+# ==========================================
+st.markdown(f"""
+<div class='health-footer'>
+<span>🟢 SYSTEM HEALTH STATUS | </span>
+<span>Dhan API Latency: <span class='health-ok'>{api_latency_ms:.1f} ms</span> | </span>
+<span>Math Engine Processing: <span class='health-ok'>{calc_latency_ms:.1f} ms</span> | </span>
+<span>Data Freshness: <span class='health-ok'>Live</span> | </span>
+<span>Target Expiry: <span class='health-ok'>{expiry_input}</span></span>
+</div>
+""", unsafe_allow_html=True)
 
 if live_feed:
     time.sleep(refresh_rate)
