@@ -1,0 +1,12 @@
+weights:
+  flow: 0.35
+  gamma: 0.20
+  delta: 0.20
+  pcr: 0.15
+  vwap_proxy: 0.10
+
+thresholds:
+  strong_bull: 65
+  bull_lean: 55
+  strong_bear: 35
+  bear_lean: 45
