@@ -30,10 +30,10 @@ if 'db_initialized' not in st.session_state:
     st.session_state.db_initialized = True
 
 @st.cache_resource
-def get_dhan_client_v13():
+def get_dhan_client_v14():
     return DhanMarketData()
 
-client = get_dhan_client_v13()
+client = get_dhan_client_v14()
 
 # --- SIDEBAR CONTROLS ---
 st.sidebar.title("⚙️ Engine Controls")
@@ -134,64 +134,60 @@ m1, m2, m3 = st.columns([1.2, 2.3, 1.5])
 
 with m1:
     st.markdown(f"""
-    <div class='sm-card'>
-        <div style='color: #888; font-size: 0.9em; letter-spacing: 1px;'>INSTITUTIONAL SCORE</div>
-        <div style='color: {decision["color"]}; font-size: 3.5em; font-weight: bold; margin-top: 10px;'>{decision["score"]}</div>
-        <div style='color: #AAA; font-size: 0.9em;'>Max Conviction Index</div>
-        <hr style="border-color: #333;">
-        <div style='color: {smart_money["flow_color"]}; font-size: 1.1em; font-weight: bold;'>{smart_money["flow"]}</div>
-        <div style='color: {smart_money["div_color"]}; font-size: 0.9em;'>{smart_money["divergence"]}</div>
-    </div>
-    """, unsafe_allow_html=True)
+<div class='sm-card'>
+<div style='color: #888; font-size: 0.9em; letter-spacing: 1px;'>INSTITUTIONAL SCORE</div>
+<div style='color: {decision["color"]}; font-size: 3.5em; font-weight: bold; margin-top: 10px;'>{decision["score"]}</div>
+<div style='color: #AAA; font-size: 0.9em;'>Max Conviction Index</div>
+<hr style="border-color: #333;">
+<div style='color: {smart_money["flow_color"]}; font-size: 1.1em; font-weight: bold;'>{smart_money["flow"]}</div>
+<div style='color: {smart_money["div_color"]}; font-size: 0.9em;'>{smart_money["divergence"]}</div>
+</div>
+""", unsafe_allow_html=True)
 
 with m2:
     st.markdown(f"""
-    <div class='trade-setup'>
-        <h3 style='margin:0; color:{decision["color"]};'>{decision["signal"]}</h3>
-        <p style='margin:0; color:#888; font-size:0.9em;'>Algorithmic Trade Recommendation based on Volatility Expected Move</p>
-        
-        <div class='trade-grid'>
-            <div class='trade-box'>
-                <div class='trade-label'>Entry Level</div>
-                <div class='trade-value'>₹{decision["entry"]:,.0f}</div>
-            </div>
-            <div class='trade-box'>
-                <div class='trade-label'>Stop Loss</div>
-                <div style='color:#FF3D00;' class='trade-value'>₹{decision["sl"]:,.0f}</div>
-            </div>
-            <div class='trade-box'>
-                <div class='trade-label'>Target</div>
-                <div style='color:#00E676;' class='trade-value'>₹{decision["target"]:,.0f}</div>
-            </div>
-            <div class='trade-box'>
-                <div class='trade-label'>Risk/Reward</div>
-                <div class='trade-value'>{decision["rr"]}</div>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+<div class='trade-setup'>
+<h3 style='margin:0; color:{decision["color"]};'>{decision["signal"]}</h3>
+<p style='margin:0; color:#888; font-size:0.9em;'>Algorithmic Trade Recommendation based on Volatility Expected Move</p>
+<div class='trade-grid'>
+<div class='trade-box'>
+<div class='trade-label'>Entry Level</div>
+<div class='trade-value'>₹{decision["entry"]:,.0f}</div>
+</div>
+<div class='trade-box'>
+<div class='trade-label'>Stop Loss</div>
+<div style='color:#FF3D00;' class='trade-value'>₹{decision["sl"]:,.0f}</div>
+</div>
+<div class='trade-box'>
+<div class='trade-label'>Target</div>
+<div style='color:#00E676;' class='trade-value'>₹{decision["target"]:,.0f}</div>
+</div>
+<div class='trade-box'>
+<div class='trade-label'>Risk/Reward</div>
+<div class='trade-value'>{decision["rr"]}</div>
+</div>
+</div>
+</div>
+""", unsafe_allow_html=True)
 
 with m3:
     st.markdown(f"""
-    <div class='sm-card' style='text-align: left; padding: 20px;'>
-        <div style='color: #888; font-size: 0.9em; letter-spacing: 1px; text-align: center; margin-bottom: 15px;'>MARKET PROBABILITIES</div>
-        
-        <div style='margin-bottom: 10px;'>
-            <span style='color: #00E676; font-weight: bold;'>BULLISH ({decision["bull_prob"]}%)</span>
-            <div class='prob-bar-container'><div class='prob-bar' style='width: {decision["bull_prob"]}%; background-color: #00E676;'></div></div>
-        </div>
-        
-        <div style='margin-bottom: 10px;'>
-            <span style='color: #FFC107; font-weight: bold;'>SIDEWAYS ({decision["side_prob"]}%)</span>
-            <div class='prob-bar-container'><div class='prob-bar' style='width: {decision["side_prob"]}%; background-color: #FFC107;'></div></div>
-        </div>
-        
-        <div style='margin-bottom: 10px;'>
-            <span style='color: #FF3D00; font-weight: bold;'>BEARISH ({decision["bear_prob"]}%)</span>
-            <div class='prob-bar-container'><div class='prob-bar' style='width: {decision["bear_prob"]}%; background-color: #FF3D00;'></div></div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+<div class='sm-card' style='text-align: left; padding: 20px;'>
+<div style='color: #888; font-size: 0.9em; letter-spacing: 1px; text-align: center; margin-bottom: 15px;'>MARKET PROBABILITIES</div>
+<div style='margin-bottom: 10px;'>
+<span style='color: #00E676; font-weight: bold;'>BULLISH ({decision["bull_prob"]}%)</span>
+<div class='prob-bar-container'><div class='prob-bar' style='width: {decision["bull_prob"]}%; background-color: #00E676;'></div></div>
+</div>
+<div style='margin-bottom: 10px;'>
+<span style='color: #FFC107; font-weight: bold;'>SIDEWAYS ({decision["side_prob"]}%)</span>
+<div class='prob-bar-container'><div class='prob-bar' style='width: {decision["side_prob"]}%; background-color: #FFC107;'></div></div>
+</div>
+<div style='margin-bottom: 10px;'>
+<span style='color: #FF3D00; font-weight: bold;'>BEARISH ({decision["bear_prob"]}%)</span>
+<div class='prob-bar-container'><div class='prob-bar' style='width: {decision["bear_prob"]}%; background-color: #FF3D00;'></div></div>
+</div>
+</div>
+""", unsafe_allow_html=True)
 
 st.markdown("---")
 
