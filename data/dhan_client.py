@@ -123,16 +123,21 @@ class DhanMarketData:
             pe = val.get("pe", val.get("putOptions", val.get("PE", {})))
             
             rows.append({
-                "Strike": strike_val,
-                "CE_OI": ce.get("oi", ce.get("open_interest", ce.get("openInterest", 0))),
-                "CE_LTP": ce.get("last_price", ce.get("ltp", ce.get("close", 0))),
-                "CE_IV": ce.get("implied_volatility", ce.get("iv", ce.get("impliedVolatility", 0))),
-                "CE_Delta": ce.get("greeks", {}).get("delta", ce.get("delta", 0)) if isinstance(ce.get("greeks"), dict) else ce.get("delta", 0),
-                "PE_OI": pe.get("oi", pe.get("open_interest", pe.get("openInterest", 0))),
-                "PE_LTP": pe.get("last_price", pe.get("ltp", pe.get("close", 0))),
-                "PE_IV": pe.get("implied_volatility", pe.get("iv", pe.get("impliedVolatility", 0))),
-                "PE_Delta": pe.get("greeks", {}).get("delta", pe.get("delta", 0)) if isinstance(pe.get("greeks"), dict) else pe.get("delta", 0)
-            })
+                    "Strike": strike_val,
+                    "CE_Volume": ce.get("volume", ce.get("traded_volume", 0)),
+                    "CE_OI": ce.get("oi", ce.get("open_interest", ce.get("openInterest", 0))),
+                    "CE_LTP": ce.get("last_price", ce.get("ltp", ce.get("close", 0))),
+                    "CE_IV": ce.get("implied_volatility", ce.get("iv", ce.get("impliedVolatility", 0))),
+                    "CE_Delta": ce.get("greeks", {}).get("delta", ce.get("delta", 0)) if isinstance(ce.get("greeks"), dict) else ce.get("delta", 0),
+                    "CE_Gamma": ce.get("greeks", {}).get("gamma", ce.get("gamma", 0)) if isinstance(ce.get("greeks"), dict) else ce.get("gamma", 0),
+                    
+                    "PE_Volume": pe.get("volume", pe.get("traded_volume", 0)),
+                    "PE_OI": pe.get("oi", pe.get("open_interest", pe.get("openInterest", 0))),
+                    "PE_LTP": pe.get("last_price", pe.get("ltp", pe.get("close", 0))),
+                    "PE_IV": pe.get("implied_volatility", pe.get("iv", pe.get("impliedVolatility", 0))),
+                    "PE_Delta": pe.get("greeks", {}).get("delta", pe.get("delta", 0)) if isinstance(pe.get("greeks"), dict) else pe.get("delta", 0),
+                    "PE_Gamma": pe.get("greeks", {}).get("gamma", pe.get("gamma", 0)) if isinstance(pe.get("greeks"), dict) else pe.get("gamma", 0)
+                })
 
         df = pd.DataFrame(rows)
         
