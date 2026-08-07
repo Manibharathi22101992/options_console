@@ -1,17 +1,18 @@
 import sys
 import os
-
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
 import time
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from data.dhan_client import DhanMarketData
 from analytics.signals import analyze_market
+from analytics.institutional import calculate_exposures
 from ui.components import render_gauge_chart, render_oi_heatmap
-from core.database import init_db, save_signal
+from core.database import init_db
 
-# --- BULLETPROOF IMPORT BLOCK ---
+# --- FALLBACK IMPORTS ---
 try:
     from analytics.engine import calculate_advanced_pcr, calculate_max_pain
 except ImportError:
@@ -19,111 +20,109 @@ except ImportError:
     def calculate_advanced_pcr(df, ltp):
         val = calculate_pcr(df)
         return val, val
-# ---------------------------------
 
-st.set_page_config(page_title="Pro NIFTY Options Dash", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Institutional Quant Engine", layout="wide", page_icon="🏛️")
 
 if 'db_initialized' not in st.session_state:
     init_db()
     st.session_state.db_initialized = True
 
 @st.cache_resource
-def get_dhan_client_v8():
+def get_dhan_client_v10():
     return DhanMarketData()
 
-client = get_dhan_client_v8()
+client = get_dhan_client_v10()
 
-# --- PROFESSIONAL UI SIDEBAR (IST AWARE) ---
+# --- SIDEBAR CONTROLS ---
 st.sidebar.title("⚙️ Engine Controls")
-st.sidebar.markdown("---")
-
-# Force calculation based on Indian Standard Time (IST = UTC + 5:30)
-ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
+ist_now = datetime.now(ZoneInfo("Asia/Kolkata"))
 today_ist = ist_now.date()
-
-# Auto-calculate next upcoming Tuesday based on IST date
 next_tuesday = today_ist + timedelta((1 - today_ist.weekday()) % 7)
-expiry_input = st.sidebar.text_input("Target Expiry Date (YYYY-MM-DD)", value=next_tuesday.strftime("%Y-%m-%d"))
 
-st.sidebar.markdown("---")
+expiry_input = st.sidebar.text_input("Target Expiry Date (YYYY-MM-DD)", value=next_tuesday.strftime("%Y-%m-%d"))
 live_feed = st.sidebar.toggle("🔴 Auto-Refresh Feed", value=True)
 refresh_rate = st.sidebar.slider("Refresh Speed (Seconds)", min_value=3, max_value=60, value=5)
 
-if live_feed:
-    st.sidebar.success(f"Live feed ON ({refresh_rate}s delays)")
-else:
-    st.sidebar.warning("Live feed PAUSED")
+# --- CORE ENGINE LOOP ---
+ltp, raw_response = client.get_live_option_chain(expiry_date=expiry_input)
+if ltp is None or not raw_response:
+    st.error(f"Waiting for Data... Market closed or {expiry_input} not available.")
+    st.stop()
+    
+df = client.process_oc_to_dataframe(raw_response)
+if df.empty or "Strike" not in df.columns:
+    st.error("Engine failed to parse option chain.")
+    st.stop()
 
-# --- DASHBOARD UI ---
-st.title("⚡ Quantitative Options Engine")
-st.caption(f"Server Time (IST): {ist_now.strftime('%Y-%m-%d %H:%M:%S')} | Target Expiry: {expiry_input}")
+if ltp == 0:
+    atm_idx = (df['CE_LTP'] - df['PE_LTP']).abs().idxmin()
+    ltp = df.loc[atm_idx, 'Strike']
 
-placeholder = st.empty()
+df_filtered = df[(df['Strike'] >= ltp - 600) & (df['Strike'] <= ltp + 600)].copy()
 
-with placeholder.container():
-    ltp, oc_raw = client.get_live_option_chain(expiry_date=expiry_input)
-    
-    if ltp is None or not oc_raw:
-        st.error(f"Waiting for Data... Market closed or {expiry_input} not available.")
-        st.stop()
-        
-    df = client.process_oc_to_dataframe(oc_raw)
-    
-    if df.empty:
-        st.error("No option chain data available or structure mismatch.")
-        st.stop()
-        
-    if ltp == 0:
-        atm_idx = (df['CE_LTP'] - df['PE_LTP']).abs().idxmin()
-        ltp = df.loc[atm_idx, 'Strike']
-        
-    df_filtered = df[(df['Strike'] >= ltp - 500) & (df['Strike'] <= ltp + 500)]
-    
-    overall_pcr, atm_pcr = calculate_advanced_pcr(df_filtered, ltp)
-    max_pain = calculate_max_pain(df_filtered)
-    
-    analysis = analyze_market(ltp, df_filtered, max_pain, overall_pcr, atm_pcr)
-    
-    save_signal({
-        "ltp": ltp, "pcr": overall_pcr, "max_pain": max_pain,
-        "regime": analysis['regime'],
-        "confluence_score": analysis['confluence'],
-        "recommendation": analysis['recommendation']
-    })
+# --- RUN INSTITUTIONAL ENGINES ---
+overall_pcr, atm_pcr = calculate_advanced_pcr(df_filtered, ltp)
+max_pain = calculate_max_pain(df_filtered)
+exposures = calculate_exposures(df_filtered, ltp)
+analysis = analyze_market(ltp, df_filtered, max_pain, overall_pcr, atm_pcr)
 
-    # TOP CARDS
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("NIFTY Spot", f"₹{ltp:,.2f}")
-    c2.metric("Overall PCR", f"{overall_pcr}", delta="Bullish" if overall_pcr > 1 else "Bearish")
-    c3.metric("ATM PCR (5-Strike)", f"{atm_pcr}", delta="Momentum Bullish" if atm_pcr > overall_pcr else "Momentum Bearish")
-    c4.metric("Max Pain", f"₹{max_pain:,.0f}")
-    c5.metric("Market Regime", analysis['regime'])
+# ==========================================
+# VERSION 2 UI: TOP RIBBON
+# ==========================================
+st.markdown("""
+<style>
+    .ribbon-metric { background-color: #1E1E2E; padding: 10px; border-radius: 8px; text-align: center; border: 1px solid #333; }
+    .ribbon-title { font-size: 0.85em; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+    .ribbon-val { font-size: 1.4em; font-weight: bold; color: #FFF; }
+    .pos-gex { color: #00E676; }
+    .neg-gex { color: #FF3D00; }
+</style>
+""", unsafe_allow_html=True)
 
-    st.markdown("---")
-    
-    c_g1, c_g2, c_sig = st.columns([1,1,2])
-    with c_g1: st.plotly_chart(render_gauge_chart(analysis['confluence'], "Confluence Score"), use_container_width=True)
-    with c_g2: st.plotly_chart(render_gauge_chart(analysis['confidence'], "Conviction %"), use_container_width=True)
-    with c_sig:
-        color = "#00E676" if "CE" in analysis['recommendation'] else ("#FF3D00" if "PE" in analysis['recommendation'] else "#FFC107")
-        st.markdown(f"""
-        <div style="padding: 15px; border-radius: 10px; background-color: #1E2130; border-left: 5px solid {color}; height: 100%;">
-            <h3 style="margin-top: 0; color: {color};">{analysis['recommendation']}</h3>
-            <p style="margin-bottom: 5px; color: gray;"><b>Risk Profile:</b> {analysis['risk']}</p>
-            <div style="font-size: 0.95em; line-height: 1.6;">
-                {analysis['reason']}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-    st.markdown("---")
-    
-    c_chart, c_table = st.columns([2, 2])
-    with c_chart: st.plotly_chart(render_oi_heatmap(df_filtered), use_container_width=True)
-    with c_table:
-        st.markdown("### Live Greeks & IV (ATM)")
-        atm_df = df_filtered.iloc[(df_filtered['Strike'] - ltp).abs().argsort()[:5]].sort_values('Strike')
-        st.dataframe(atm_df[['Strike', 'CE_LTP', 'CE_Delta', 'CE_IV', 'PE_LTP', 'PE_Delta', 'PE_IV']], hide_index=True, use_container_width=True)
+st.title("🏛️ Institutional Decision Intelligence")
+st.caption(f"IST: {ist_now.strftime('%H:%M:%S')} | Target Expiry: {expiry_input}")
+
+r1, r2, r3, r4, r5, r6, r7 = st.columns(7)
+with r1: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Spot</div><div class='ribbon-val'>₹{ltp:,.0f}</div></div>", unsafe_allow_html=True)
+with r2: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>PCR</div><div class='ribbon-val'>{overall_pcr:.2f}</div></div>", unsafe_allow_html=True)
+with r3: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Max Pain</div><div class='ribbon-val'>₹{max_pain:,.0f}</div></div>", unsafe_allow_html=True)
+with r4: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Net GEX</div><div class='ribbon-val {'pos-gex' if exposures['net_gex'] > 0 else 'neg-gex'}'>{exposures['net_gex']/1e7:,.1f} Cr</div></div>", unsafe_allow_html=True)
+with r5: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Gamma Flip</div><div class='ribbon-val'>₹{exposures['gamma_flip']:,.0f}</div></div>", unsafe_allow_html=True)
+with r6: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Dealer Regime</div><div class='ribbon-val' style='font-size:1.1em;'>{'Long Gamma' if exposures['net_gex'] > 0 else 'Short Gamma'}</div></div>", unsafe_allow_html=True)
+with r7: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Hedging</div><div class='ribbon-val' style='font-size:1.1em;'>{'Bullish' if exposures['net_dex'] < 0 else 'Bearish'}</div></div>", unsafe_allow_html=True)
+
+st.markdown("---")
+
+# ==========================================
+# MIDDLE ROW: AI DECISION ENGINE
+# ==========================================
+c_g1, c_g2, c_sig = st.columns([1,1,2])
+with c_g1: st.plotly_chart(render_gauge_chart(analysis['confluence'], "AI Confluence Score"), use_container_width=True)
+with c_g2: st.plotly_chart(render_gauge_chart(analysis['confidence'], "Win Probability %"), use_container_width=True)
+with c_sig:
+    color = "#00E676" if "CE" in analysis['recommendation'] else ("#FF3D00" if "PE" in analysis['recommendation'] else "#FFC107")
+    st.markdown(f"""
+    <div style="padding: 20px; border-radius: 10px; background-color: #1E1E2E; border-left: 5px solid {color}; height: 100%;">
+        <h3 style="margin-top: 0; color: {color};">Signal: {analysis['recommendation']}</h3>
+        <p style="color: #AAA;"><b>Market Regime:</b> {analysis['regime']} | <b>Risk:</b> {analysis['risk']}</p>
+        <p style="color: #AAA;"><b>Dealer Positioning:</b> {exposures['dealer_regime']}</p>
+        <hr style="border-color: #333;">
+        <div style="font-size: 0.95em; line-height: 1.6;">{analysis['reason']}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+st.markdown("---")
+
+# ==========================================
+# BOTTOM ROW: HEATMAP & GREEKS
+# ==========================================
+c_chart, c_table = st.columns([2, 2])
+with c_chart: 
+    st.plotly_chart(render_oi_heatmap(df_filtered), use_container_width=True)
+with c_table:
+    st.markdown("### Institutional Greeks & Volume")
+    atm_df = df_filtered.iloc[(df_filtered['Strike'] - ltp).abs().argsort()[:7]].sort_values('Strike')
+    st.dataframe(atm_df[['Strike', 'CE_LTP', 'CE_Volume', 'CE_Gamma', 'PE_Gamma', 'PE_Volume', 'PE_LTP']], hide_index=True, use_container_width=True)
 
 if live_feed:
     time.sleep(refresh_rate)
