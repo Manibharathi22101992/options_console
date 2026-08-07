@@ -4,16 +4,17 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
 import time
+import sqlite3
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from data.dhan_client import DhanMarketData
 from analytics.institutional import calculate_exposures
 from analytics.smart_money import analyze_smart_money
 from analytics.volatility import analyze_volatility
-from analytics.decision_engine import generate_institutional_decision
 from analytics.market_structure import analyze_market_structure
 from analytics.alerts import check_smart_alerts, send_telegram_alert
 from analytics.volume_profile import calculate_volume_profile
+from decision.recommendation_engine import generate_institutional_decision
 from ui.components import render_oi_heatmap
 from core.database import init_db
 
@@ -25,218 +26,205 @@ except ImportError:
         val = calculate_pcr(df)
         return val, val
 
-st.set_page_config(page_title="Institutional Quant Engine", layout="wide", page_icon="🏛️")
+st.set_page_config(page_title="Institutional Quant Engine 2.99", layout="wide", page_icon="🏛️")
 
 if 'db_initialized' not in st.session_state:
     init_db()
+    # Phase 7 & 8: Historical Intelligence Table
+    conn = sqlite3.connect('quant_engine.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS history 
+                 (timestamp TEXT, ltp REAL, inst_score INTEGER, confidence INTEGER, regime TEXT, signal TEXT)''')
+    conn.commit()
+    conn.close()
     st.session_state.db_initialized = True
 
 @st.cache_resource
-def get_dhan_client_v22():
+def get_dhan_client_v299():
     return DhanMarketData()
 
-client = get_dhan_client_v22()
+client = get_dhan_client_v299()
 
+# --- SIDEBAR ---
 st.sidebar.title("⚙️ Engine Controls")
 ist_now = datetime.now(ZoneInfo("Asia/Kolkata"))
-today_ist = ist_now.date()
-next_tuesday = today_ist + timedelta((1 - today_ist.weekday()) % 7)
-
-expiry_input = st.sidebar.text_input("Target Expiry Date (YYYY-MM-DD)", value=next_tuesday.strftime("%Y-%m-%d"))
+expiry_input = st.sidebar.text_input("Target Expiry Date (YYYY-MM-DD)", value=(ist_now.date() + timedelta((1 - ist_now.date().weekday()) % 7)).strftime("%Y-%m-%d"))
 live_feed = st.sidebar.toggle("🔴 Auto-Refresh Feed", value=True)
-refresh_rate = st.sidebar.slider("Refresh Speed (Seconds)", min_value=3, max_value=60, value=5)
+refresh_rate = st.sidebar.slider("Refresh Speed (Seconds)", 3, 60, 5)
 
 if st.sidebar.button("🔄 Reset Baseline Memory"):
-    if 'baseline' in st.session_state:
-        del st.session_state['baseline']
-    if 'active_alerts' in st.session_state:
-        st.session_state.active_alerts = []
-    st.sidebar.success("Memory & Alerts Reset!")
+    if 'baseline' in st.session_state: del st.session_state['baseline']
+    if 'active_alerts' in st.session_state: st.session_state.active_alerts = []
+    st.sidebar.success("Memory Reset!")
 
-# ==========================================
-# DIAGNOSTICS: API LATENCY TIMER
-# ==========================================
+# --- DATA PIPELINE (Phase 10: Performance) ---
 api_start = time.time()
 ltp, raw_response = client.get_live_option_chain(expiry_date=expiry_input)
-api_end = time.time()
-api_latency_ms = (api_end - api_start) * 1000
+api_latency = (time.time() - api_start) * 1000
 
 if ltp is None or not raw_response:
-    st.error(f"Waiting for Data... Market closed or {expiry_input} not available.")
+    st.error("Waiting for Data...")
     st.stop()
     
 df = client.process_oc_to_dataframe(raw_response)
-if df.empty or "Strike" not in df.columns:
-    st.error("Engine failed to parse option chain.")
-    st.stop()
-
-if ltp == 0:
-    atm_idx = (df['CE_LTP'] - df['PE_LTP']).abs().idxmin()
-    ltp = df.loc[atm_idx, 'Strike']
-
+if ltp == 0: ltp = df.loc[(df['CE_LTP'] - df['PE_LTP']).abs().idxmin(), 'Strike']
 df_filtered = df[(df['Strike'] >= ltp - 600) & (df['Strike'] <= ltp + 600)].copy()
 
-# ==========================================
-# DIAGNOSTICS: MATH ENGINE TIMER
-# ==========================================
 calc_start = time.time()
-
 overall_pcr, atm_pcr = calculate_advanced_pcr(df_filtered, ltp)
 max_pain = calculate_max_pain(df_filtered)
 exposures = calculate_exposures(df_filtered, ltp)
+vp = calculate_volume_profile(df_filtered)
 
 current_total_oi = df_filtered['CE_OI'].sum() + df_filtered['PE_OI'].sum()
 
-temp_baseline_ltp = st.session_state.baseline['ltp'] if 'baseline' in st.session_state else ltp
-volatility = analyze_volatility(df_filtered, ltp, temp_baseline_ltp, expiry_input)
-
 if 'baseline' not in st.session_state:
-    st.session_state.baseline = {'ltp': ltp, 'oi': current_total_oi, 'pcr': overall_pcr, 'iv': volatility['atm_iv'], 'time': time.time()}
+    st.session_state.baseline = {'ltp': ltp, 'oi': current_total_oi, 'pcr': overall_pcr, 'iv': 15.0, 'time': time.time()}
+
+vol = analyze_volatility(df_filtered, ltp, st.session_state.baseline['ltp'], expiry_input)
+st.session_state.baseline['iv'] = vol['atm_iv']
 
 smart_money = analyze_smart_money(
     current_price=ltp, prev_price=st.session_state.baseline['ltp'],
     current_oi=current_total_oi, prev_oi=st.session_state.baseline['oi'],
     current_pcr=overall_pcr, prev_pcr=st.session_state.baseline['pcr'],
-    current_iv=volatility['atm_iv'], prev_iv=st.session_state.baseline['iv']
+    current_iv=vol['atm_iv'], prev_iv=st.session_state.baseline['iv']
 )
 
-vp = calculate_volume_profile(df_filtered)
+structure = analyze_market_structure(exposures['net_gex'], overall_pcr, smart_money['flow'], ltp, st.session_state.baseline['ltp'], vp['total_vol'])
+dec = generate_institutional_decision(ltp, st.session_state.baseline['ltp'], overall_pcr, exposures['net_gex'], exposures['net_dex'], vol['expected_move'], smart_money['flow'])
+calc_latency = (time.time() - calc_start) * 1000
 
-decision = generate_institutional_decision(
-    ltp, overall_pcr, exposures['net_gex'], exposures['net_dex'], 
-    volatility['expected_move'], max_pain, smart_money['flow']
-)
-
-structure = analyze_market_structure(exposures['net_gex'], overall_pcr, smart_money['flow'])
-
-calc_end = time.time()
-calc_latency_ms = (calc_end - calc_start) * 1000
+# Phase 7 & 8: Log to DB
+conn = sqlite3.connect('quant_engine.db')
+conn.execute("INSERT INTO history VALUES (?, ?, ?, ?, ?, ?)", (ist_now.strftime('%H:%M:%S'), ltp, dec['score'], dec['confidence'], structure['regime'], dec['signal']))
+conn.commit()
+conn.close()
 
 # ==========================================
-# VERSION 2 UI: TOP RIBBON
+# PHASE 5: TOP RIBBON
 # ==========================================
 st.markdown("""
 <style>
-.ribbon-metric { background-color: #1E1E2E; padding: 10px; border-radius: 8px; text-align: center; border: 1px solid #333; }
-.ribbon-title { font-size: 0.85em; color: #888; text-transform: uppercase; letter-spacing: 1px; }
-.ribbon-val { font-size: 1.4em; font-weight: bold; color: #FFF; }
-.pos-gex { color: #00E676; }
-.neg-gex { color: #FF3D00; }
-.sm-card { padding: 15px; border-radius: 10px; background-color: #1E1E2E; border: 1px solid #333; text-align: center; height: 100%;}
-.trade-setup { background-color: #161824; border: 1px solid #333; border-radius: 8px; padding: 15px; margin-top: 10px; }
-.trade-grid { display: flex; justify-content: space-between; text-align: center; margin-top: 15px; }
-.trade-box { flex: 1; margin: 0 5px; background: #222536; padding: 10px; border-radius: 6px; }
-.trade-label { font-size: 0.8em; color: #888; text-transform: uppercase; }
-.trade-value { font-size: 1.3em; font-weight: bold; color: #FFF; }
-.prob-bar-container { width: 100%; background-color: #222; border-radius: 5px; margin-top: 5px; height: 18px; }
-.prob-bar { height: 100%; border-radius: 5px; }
-.vp-panel { display: flex; justify-content: space-between; background: #161824; padding: 15px; border-radius: 8px; border: 1px solid #333; margin-bottom: 20px;}
-.vp-col { text-align: center; flex: 1; }
-.health-footer { background: #0E1117; border: 1px solid #333; border-radius: 8px; padding: 12px; text-align: center; font-family: monospace; font-size: 0.9em; color: #888; margin-top: 30px; margin-bottom: 20px; }
-.health-ok { color: #00E676; font-weight: bold; }
+.rib { background: #1E1E2E; padding: 10px; border-radius: 8px; text-align: center; border: 1px solid #333; }
+.rib-t { font-size: 0.85em; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+.rib-v { font-size: 1.4em; font-weight: bold; color: #FFF; }
+.card { background: #161824; padding: 15px; border-radius: 8px; border: 1px solid #333; height: 100%; }
+.bar-bg { width: 100%; background: #222; border-radius: 5px; height: 12px; margin-top: 5px;}
+.bar-fg { height: 100%; border-radius: 5px; }
+.matrix-row { display: flex; justify-content: space-between; border-bottom: 1px solid #333; padding: 8px 0; }
+.target-box { background: #222536; padding: 10px; border-radius: 6px; text-align: center; flex: 1; margin: 0 4px; }
+.health-footer { background: #0E1117; border-top: 1px solid #333; padding: 8px; text-align: center; font-family: monospace; font-size: 0.85em; color: #888; margin-top: 30px;}
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🏛️ Institutional Decision Intelligence")
-st.caption(f"IST: {ist_now.strftime('%H:%M:%S')} | Target Expiry: {expiry_input}")
+r1, r2, r3, r4, r5, r6 = st.columns(6)
+with r1: st.markdown(f"<div class='rib'><div class='rib-t'>Spot</div><div class='rib-v'>₹{ltp:,.0f}</div></div>", unsafe_allow_html=True)
+with r2: st.markdown(f"<div class='rib'><div class='rib-t'>Inst. Score</div><div class='rib-v' style='color:{dec['color']}'>{dec['score']}/100</div></div>", unsafe_allow_html=True)
+with r3: st.markdown(f"<div class='rib'><div class='rib-t'>Confidence</div><div class='rib-v'>{dec['confidence']}%</div></div>", unsafe_allow_html=True)
+with r4: st.markdown(f"<div class='rib'><div class='rib-t'>Market Regime</div><div class='rib-v' style='color:{structure['color']}; font-size:1.1em;'>{structure['regime']}</div></div>", unsafe_allow_html=True)
+with r5: st.markdown(f"<div class='rib'><div class='rib-t'>Net GEX</div><div class='rib-v'>{'🟢' if exposures['net_gex']>0 else '🔴'} {exposures['net_gex']/1e7:,.1f} Cr</div></div>", unsafe_allow_html=True)
+with r6: st.markdown(f"<div class='rib'><div class='rib-t'>Expected Move</div><div class='rib-v'>±{vol['expected_move']:.0f}</div></div>", unsafe_allow_html=True)
 
-r1, r2, r3, r4, r5, r6, r7 = st.columns(7)
-with r1: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Spot</div><div class='ribbon-val'>₹{ltp:,.0f}</div></div>", unsafe_allow_html=True)
-with r2: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Gamma Wall (Res)</div><div style='color:#FF3D00;' class='ribbon-val'>₹{exposures['gamma_wall']:,.0f}</div></div>", unsafe_allow_html=True)
-with r3: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Delta Wall</div><div style='color:#FFC107;' class='ribbon-val'>₹{exposures['delta_wall']:,.0f}</div></div>", unsafe_allow_html=True)
-with r4: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Net GEX</div><div class='ribbon-val {'pos-gex' if exposures['net_gex'] > 0 else 'neg-gex'}'>{exposures['net_gex']/1e7:,.1f} Cr</div></div>", unsafe_allow_html=True)
-with r5: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Expected Range</div><div style='font-size:1.1em;' class='ribbon-val'>₹{volatility['lower_bound']:,.0f} - ₹{volatility['upper_bound']:,.0f}</div></div>", unsafe_allow_html=True)
-with r6: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Range Exhausted</div><div class='ribbon-val' style='font-size:1.2em;'>{volatility['position_pct']:.0f}%</div></div>", unsafe_allow_html=True)
-with r7: st.markdown(f"<div class='ribbon-metric'><div class='ribbon-title'>Hedging</div><div class='ribbon-val' style='font-size:1.1em;'>{'Bullish' if exposures['net_dex'] < 0 else 'Bearish'}</div></div>", unsafe_allow_html=True)
+st.markdown("<br>", unsafe_allow_html=True)
+
+# ==========================================
+# PHASE 5: 3-PANEL INSTITUTIONAL LAYOUT
+# ==========================================
+c_left, c_center, c_right = st.columns([1.2, 2.2, 1.2])
+
+# --- LEFT PANEL: STRUCTURE ---
+with c_left:
+    st.markdown(f"""
+<div class='card'>
+<div style='color:#888; font-size:0.9em; letter-spacing:1px; margin-bottom:15px;'>MARKET INTELLIGENCE</div>
+<div style='margin-bottom:15px;'>
+    <div style='display:flex; justify-content:space-between;'><span>Trend Strength</span><span style='color:#00E676;'>{structure['trend_label']} ({structure['trend_strength']}/100)</span></div>
+    <div class='bar-bg'><div class='bar-fg' style='width:{structure['trend_strength']}%; background:#00E676;'></div></div>
+</div>
+<hr style='border-color:#333;'>
+<div style='color:#888; font-size:0.8em;'>VALUE AREA (70% VOL)</div>
+<div style='display:flex; justify-content:space-between; margin-top:5px;'><span>VAH</span><span style='color:#00E676;'>₹{vp['vah']:.0f}</span></div>
+<div style='display:flex; justify-content:space-between;'><span>POC</span><span style='color:#FFF; font-weight:bold;'>₹{vp['poc']:.0f}</span></div>
+<div style='display:flex; justify-content:space-between;'><span>VAL</span><span style='color:#FF3D00;'>₹{vp['val']:.0f}</span></div>
+<hr style='border-color:#333;'>
+<div style='display:flex; justify-content:space-between;'><span>Flow</span><span style='color:{smart_money["flow_color"]};'>{smart_money["flow"]}</span></div>
+</div>
+""", unsafe_allow_html=True)
+
+# --- CENTER PANEL: DECISION & PLANNER ---
+with c_center:
+    matrix_html = "".join([f"<div class='matrix-row'><span>{k}</span><span style='color:{'#00E676' if v=='✓' else '#FF3D00'}; font-weight:bold;'>{v}</span></div>" for k, v in dec['reasons'].items()])
+    
+    st.markdown(f"""
+<div class='card' style='border-left: 4px solid {dec['color']};'>
+<div style='display:flex; justify-content:space-between; align-items:center;'>
+    <div>
+        <h2 style='margin:0; color:{dec['color']};'>{dec['signal']}</h2>
+        <span style='color:#888; font-size:0.9em;'>Algorithmic Trade Planner</span>
+    </div>
+    <div style='text-align:right;'>
+        <div style='font-size:2em; font-weight:bold;'>{dec['score']}</div>
+        <div style='color:#888; font-size:0.8em;'>SCORE</div>
+    </div>
+</div>
+
+<div style='margin-top:20px; background:#0E1117; padding:15px; border-radius:8px;'>
+    <div style='color:#888; font-size:0.8em; margin-bottom:10px; text-transform:uppercase;'>Decision Matrix (Why?)</div>
+    {matrix_html}
+</div>
+
+<div style='display:flex; justify-content:space-between; margin-top:20px;'>
+    <div class='target-box'>
+        <div style='color:#888; font-size:0.8em;'>ENTRY</div>
+        <div style='font-size:1.2em; font-weight:bold;'>₹{dec['entry']:.0f}</div>
+    </div>
+    <div class='target-box'>
+        <div style='color:#888; font-size:0.8em;'>STOP LOSS</div>
+        <div style='font-size:1.2em; font-weight:bold; color:#FF3D00;'>₹{dec['sl']:.0f}</div>
+    </div>
+    <div class='target-box'>
+        <div style='color:#888; font-size:0.8em;'>TARGET 1</div>
+        <div style='font-size:1.2em; font-weight:bold; color:#00E676;'>₹{dec['t1']:.0f}</div>
+    </div>
+    <div class='target-box'>
+        <div style='color:#888; font-size:0.8em;'>TARGET 2</div>
+        <div style='font-size:1.2em; font-weight:bold; color:#00E676;'>₹{dec['t2']:.0f}</div>
+    </div>
+    <div class='target-box'>
+        <div style='color:#888; font-size:0.8em;'>RISK:REWARD</div>
+        <div style='font-size:1.2em; font-weight:bold;'>{dec['rr']}</div>
+    </div>
+</div>
+</div>
+""", unsafe_allow_html=True)
+
+# --- RIGHT PANEL: PROBABILITIES ---
+with c_right:
+    st.markdown(f"""
+<div class='card'>
+<div style='color:#888; font-size:0.9em; letter-spacing:1px; margin-bottom:20px;'>PROBABILITY GAUGES</div>
+
+<div style='margin-bottom: 15px;'>
+    <div style='display:flex; justify-content:space-between;'><span style='color:#00E676; font-weight:bold;'>BULLISH</span><span>{dec["bull_prob"]}%</span></div>
+    <div class='bar-bg'><div class='bar-fg' style='width: {dec["bull_prob"]}%; background: #00E676;'></div></div>
+</div>
+
+<div style='margin-bottom: 15px;'>
+    <div style='display:flex; justify-content:space-between;'><span style='color:#FFC107; font-weight:bold;'>SIDEWAYS</span><span>{dec["side_prob"]}%</span></div>
+    <div class='bar-bg'><div class='bar-fg' style='width: {dec["side_prob"]}%; background: #FFC107;'></div></div>
+</div>
+
+<div style='margin-bottom: 15px;'>
+    <div style='display:flex; justify-content:space-between;'><span style='color:#FF3D00; font-weight:bold;'>BEARISH</span><span>{dec["bear_prob"]}%</span></div>
+    <div class='bar-bg'><div class='bar-fg' style='width: {dec["bear_prob"]}%; background: #FF3D00;'></div></div>
+</div>
+<hr style='border-color:#333;'>
+<div style='color:{smart_money["div_color"]}; font-size:0.9em; text-align:center;'>{smart_money["divergence"]}</div>
+</div>
+""", unsafe_allow_html=True)
 
 st.markdown("---")
-
-m1, m2, m3 = st.columns([1.5, 2.5, 1.2])
-
-with m1:
-    st.markdown(f"""
-<div class='sm-card'>
-<div style='color: #888; font-size: 0.9em; letter-spacing: 1px;'>MARKET STRUCTURE</div>
-<div style='color: {structure["color"]}; font-size: 1.5em; font-weight: bold; margin-top: 10px;'>{structure["regime"]}</div>
-<div style='color: #AAA; font-size: 0.9em;'>Confidence: {structure["confidence"]}%</div>
-<hr style="border-color: #333; margin: 15px 0;">
-<div style='color: #888; font-size: 0.8em; text-transform: uppercase;'>Institutional Score (0-100)</div>
-<div style='color: {decision["color"]}; font-size: 3em; font-weight: bold;'>{decision["score"]}</div>
-<div style='color: {decision["color"]}; font-size: 1em; margin-bottom: 10px;'>{decision["signal"].split('(')[-1].replace(')','')}</div>
-<div style='padding: 5px; background: rgba(0,0,0,0.2); border-radius: 5px;'>
-<div style='color: {smart_money["flow_color"]}; font-size: 0.9em; font-weight: bold;'>{smart_money["flow"]}</div>
-<div style='color: {smart_money["div_color"]}; font-size: 0.8em;'>{smart_money["divergence"]}</div>
-</div>
-</div>
-""", unsafe_allow_html=True)
-
-with m2:
-    st.markdown(f"""
-<div class='trade-setup'>
-<h3 style='margin:0; color:{decision["color"]};'>{decision["signal"]}</h3>
-<p style='margin:0; color:#888; font-size:0.9em;'>Algorithmic Trade Recommendation (Based on BS Expected Move)</p>
-<div class='trade-grid' style='margin-top: 20px;'>
-<div class='trade-box'>
-<div class='trade-label'>Entry</div>
-<div class='trade-value'>₹{decision["entry"]:,.0f}</div>
-</div>
-<div class='trade-box'>
-<div class='trade-label'>Stop Loss</div>
-<div style='color:#FF3D00;' class='trade-value'>₹{decision["sl"]:,.0f}</div>
-</div>
-<div class='trade-box'>
-<div class='trade-label'>Target 1</div>
-<div style='color:#00E676;' class='trade-value'>₹{decision["target_1"]:,.0f}</div>
-</div>
-<div class='trade-box'>
-<div class='trade-label'>Target 2</div>
-<div style='color:#00E676;' class='trade-value'>₹{decision["target_2"]:,.0f}</div>
-</div>
-<div class='trade-box'>
-<div class='trade-label'>Risk:Reward</div>
-<div class='trade-value'>{decision["rr"]}</div>
-</div>
-</div>
-</div>
-""", unsafe_allow_html=True)
-
-with m3:
-    st.markdown(f"""
-<div class='sm-card' style='text-align: left; padding: 20px;'>
-<div style='color: #888; font-size: 0.9em; letter-spacing: 1px; text-align: center; margin-bottom: 15px;'>PROBABILITIES</div>
-<div style='margin-bottom: 10px;'>
-<span style='color: #00E676; font-weight: bold; font-size: 0.9em;'>BULLISH ({decision["bull_prob"]}%)</span>
-<div class='prob-bar-container'><div class='prob-bar' style='width: {decision["bull_prob"]}%; background-color: #00E676;'></div></div>
-</div>
-<div style='margin-bottom: 10px;'>
-<span style='color: #FFC107; font-weight: bold; font-size: 0.9em;'>SIDEWAYS ({decision["side_prob"]}%)</span>
-<div class='prob-bar-container'><div class='prob-bar' style='width: {decision["side_prob"]}%; background-color: #FFC107;'></div></div>
-</div>
-<div style='margin-bottom: 10px;'>
-<span style='color: #FF3D00; font-weight: bold; font-size: 0.9em;'>BEARISH ({decision["bear_prob"]}%)</span>
-<div class='prob-bar-container'><div class='prob-bar' style='width: {decision["bear_prob"]}%; background-color: #FF3D00;'></div></div>
-</div>
-</div>
-""", unsafe_allow_html=True)
-
-st.markdown("---")
-
-st.markdown(f"""
-<div class='vp-panel'>
-<div class='vp-col'>
-<span style='color:#888; font-size:0.85em; letter-spacing:1px;'>VALUE AREA LOW (VAL)</span><br>
-<span style='color:#FF3D00; font-size:1.5em; font-weight:bold;'>₹{vp['val']:,.0f}</span>
-</div>
-<div class='vp-col' style='border-left: 1px solid #333; border-right: 1px solid #333;'>
-<span style='color:#888; font-size:0.85em; letter-spacing:1px;'>POINT OF CONTROL (POC)</span><br>
-<span style='color:#FFF; font-size:1.8em; font-weight:bold;'>₹{vp['poc']:,.0f}</span>
-</div>
-<div class='vp-col'>
-<span style='color:#888; font-size:0.85em; letter-spacing:1px;'>VALUE AREA HIGH (VAH)</span><br>
-<span style='color:#00E676; font-size:1.5em; font-weight:bold;'>₹{vp['vah']:,.0f}</span>
-</div>
-</div>
-""", unsafe_allow_html=True)
 
 c_chart, c_table = st.columns([2, 2])
 with c_chart: 
@@ -246,33 +234,23 @@ with c_table:
     atm_df = df_filtered.iloc[(df_filtered['Strike'] - ltp).abs().argsort()[:7]].sort_values('Strike')
     st.dataframe(atm_df[['Strike', 'CE_LTP', 'CE_Volume', 'CE_Gamma', 'PE_Gamma', 'PE_Volume', 'PE_LTP']], hide_index=True, use_container_width=True)
 
-if 'active_alerts' not in st.session_state:
-    st.session_state.active_alerts = []
-
-current_alerts = check_smart_alerts(
-    ltp, st.session_state.baseline['ltp'], exposures['gamma_flip'], 
-    smart_money['flow'], smart_money['divergence'], overall_pcr, st.session_state.baseline['pcr']
-)
-
+# Alerts
+if 'active_alerts' not in st.session_state: st.session_state.active_alerts = []
+current_alerts = check_smart_alerts(ltp, st.session_state.baseline['ltp'], exposures['gamma_flip'], smart_money['flow'], smart_money['divergence'], overall_pcr, st.session_state.baseline['pcr'])
 for alert in current_alerts:
     if alert['msg'] not in st.session_state.active_alerts:
         st.toast(alert['msg'], icon=alert['icon'])
         send_telegram_alert(alert['msg'], alert['icon'])
         st.session_state.active_alerts.append(alert['msg'])
+if len(st.session_state.active_alerts) > 10: st.session_state.active_alerts = st.session_state.active_alerts[-5:]
 
-if len(st.session_state.active_alerts) > 10:
-    st.session_state.active_alerts = st.session_state.active_alerts[-5:]
-
-# ==========================================
-# SPRINT 15: SYSTEM HEALTH FOOTER
-# ==========================================
+# Phase 10: Diagnostics Footer
 st.markdown(f"""
 <div class='health-footer'>
-<span>🟢 SYSTEM HEALTH STATUS | </span>
-<span>Dhan API Latency: <span class='health-ok'>{api_latency_ms:.1f} ms</span> | </span>
-<span>Math Engine Processing: <span class='health-ok'>{calc_latency_ms:.1f} ms</span> | </span>
-<span>Data Freshness: <span class='health-ok'>Live</span> | </span>
-<span>Target Expiry: <span class='health-ok'>{expiry_input}</span></span>
+<span>🟢 SYSTEM HEALTH: V2.99 | </span>
+<span>Dhan API: <span style='color:#00E676;'>{api_latency:.1f} ms</span> | </span>
+<span>Matrix Engine: <span style='color:#00E676;'>{calc_latency:.1f} ms</span> | </span>
+<span>History Log: <span style='color:#00E676;'>Active</span></span>
 </div>
 """, unsafe_allow_html=True)
 
