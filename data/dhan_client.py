@@ -12,6 +12,38 @@ UNDERLYINGS = {
     "FINNIFTY": {"id": 27, "segment": "IDX_I"}
 }
 
+def extract_option_chain(response):
+    """Recursively/iteratively walks down JSON nodes to find the option chain container."""
+    node = response
+    while isinstance(node, dict):
+        if "oc" in node:
+            return node["oc"]
+        if "records" in node:
+            return node["records"]
+        if "optionChain" in node:
+            return node["optionChain"]
+        if "data" in node:
+            node = node["data"]
+            continue
+        break
+    return {}
+
+def extract_last_price(response):
+    """Safely extracts spot / last traded price from any nesting level."""
+    node = response
+    while isinstance(node, dict):
+        for key in ["last_price", "ltp", "spot_price"]:
+            if key in node:
+                try:
+                    return float(node[key])
+                except (ValueError, TypeError):
+                    pass
+        if "data" in node:
+            node = node["data"]
+            continue
+        break
+    return 0.0
+
 class DhanMarketData:
     def __init__(self):
         self.diagnostic_printed = False
@@ -53,26 +85,13 @@ class DhanMarketData:
                     expiry=expiry_date
                 )
                 
-                # --- NON-TRUNCATED JSON LOGGING ---
-                logger.info("========== FULL RESPONSE (JSON) ==========")
-                logger.info(json.dumps(response, indent=2, default=str))
-                logger.info("==========================================")
-                
                 if not response or response.get("status") != "success":
                     logger.error(f"Option Chain API Failed. Response: {response}")
                     time.sleep(2 ** attempt)
                     continue
                 
-                data = response.get("data")
-                if data is None:
-                    raise ValueError("Response contains no 'data' field")
-                
-                logger.info(f"Data type: {type(data)}")
-                if isinstance(data, dict):
-                    logger.info(f"Top-level data keys: {list(data.keys())}")
-
-                ltp = response.get("last_price", data.get("last_price", 0) if isinstance(data, dict) else 0)
-                return ltp, data
+                ltp = extract_last_price(response)
+                return ltp, response
                 
             except Exception:
                 logger.exception("CRITICAL: option_chain call raised an exception")
@@ -81,75 +100,45 @@ class DhanMarketData:
             
         return None, None
 
-    def process_oc_to_dataframe(self, data):
+    def process_oc_to_dataframe(self, response):
         """
-        Parses the official Dhan response['data'] structure containing 'oc' and 'last_price'.
+        Extracts and normalizes the option chain data into a clean pandas DataFrame.
         """
-        if not data or not isinstance(data, dict):
-            logger.error("process_oc_to_dataframe received invalid data object.")
-            return pd.DataFrame()
-
-        # Target the official 'oc' container explicitly, fallback to data if missing
-        payload = data.get("oc", data)
+        payload = extract_option_chain(response)
         
-        logger.info(f"Payload type: {type(payload)}")
-        if isinstance(payload, dict):
-            logger.info(f"Payload keys count: {len(payload)}")
-            logger.info(f"Sample Payload keys: {list(payload.keys())[:5]}")
+        if not payload or not isinstance(payload, dict):
+            logger.error("Failed to extract valid option chain payload from response hierarchy.")
+            return pd.DataFrame()
 
         rows = []
-
-        if isinstance(payload, dict):
-            for strike_key, val in payload.items():
-                if strike_key in ["last_price", "spot_price", "ltp"] or not isinstance(val, dict):
-                    continue
-                try:
-                    strike_val = float(strike_key)
-                except ValueError:
-                    continue
-                
-                ce = val.get("ce", val.get("callOptions", val.get("CE", {})))
-                pe = val.get("pe", val.get("putOptions", val.get("PE", {})))
-                
-                rows.append({
-                    "Strike": strike_val,
-                    "CE_OI": ce.get("oi", ce.get("open_interest", ce.get("openInterest", 0))),
-                    "CE_LTP": ce.get("last_price", ce.get("ltp", ce.get("close", 0))),
-                    "CE_IV": ce.get("implied_volatility", ce.get("iv", ce.get("impliedVolatility", 0))),
-                    "CE_Delta": ce.get("greeks", {}).get("delta", ce.get("delta", 0)) if isinstance(ce.get("greeks"), dict) else ce.get("delta", 0),
-                    "PE_OI": pe.get("oi", pe.get("open_interest", pe.get("openInterest", 0))),
-                    "PE_LTP": pe.get("last_price", pe.get("ltp", pe.get("close", 0))),
-                    "PE_IV": pe.get("implied_volatility", pe.get("iv", pe.get("impliedVolatility", 0))),
-                    "PE_Delta": pe.get("greeks", {}).get("delta", pe.get("delta", 0)) if isinstance(pe.get("greeks"), dict) else pe.get("delta", 0)
-                })
-
-        elif isinstance(payload, list):
-            for item in payload:
-                if not isinstance(item, dict):
-                    continue
-                strike_val = float(item.get("strike_price", item.get("strikePrice", item.get("Strike", 0))))
-                ce = item.get("ce", item.get("callOptions", item.get("CE", {})))
-                pe = item.get("pe", item.get("putOptions", item.get("PE", {})))
-                
-                rows.append({
-                    "Strike": strike_val,
-                    "CE_OI": ce.get("oi", ce.get("open_interest", ce.get("openInterest", 0))),
-                    "CE_LTP": ce.get("last_price", ce.get("ltp", ce.get("close", 0))),
-                    "CE_IV": ce.get("implied_volatility", ce.get("iv", ce.get("impliedVolatility", 0))),
-                    "CE_Delta": ce.get("greeks", {}).get("delta", ce.get("delta", 0)) if isinstance(ce.get("greeks"), dict) else ce.get("delta", 0),
-                    "PE_OI": pe.get("oi", pe.get("open_interest", pe.get("openInterest", 0))),
-                    "PE_LTP": pe.get("last_price", pe.get("ltp", pe.get("close", 0))),
-                    "PE_IV": pe.get("implied_volatility", pe.get("iv", pe.get("impliedVolatility", 0))),
-                    "PE_Delta": pe.get("greeks", {}).get("delta", pe.get("delta", 0)) if isinstance(pe.get("greeks"), dict) else pe.get("delta", 0)
-                })
-
-        # Fail fast with diagnostic logs if no option rows are found
-        if not rows:
-            logger.error(f"No option records found. Payload type={type(payload)}")
-            if isinstance(payload, dict):
-                logger.error(f"Payload keys={list(payload.keys())[:10]}")
-            return pd.DataFrame()
+        for strike_key, val in payload.items():
+            if strike_key in ["last_price", "spot_price", "ltp", "expiry"] or not isinstance(val, dict):
+                continue
+            try:
+                strike_val = float(strike_key)
+            except ValueError:
+                continue
+            
+            ce = val.get("ce", val.get("callOptions", val.get("CE", {})))
+            pe = val.get("pe", val.get("putOptions", val.get("PE", {})))
+            
+            rows.append({
+                "Strike": strike_val,
+                "CE_OI": ce.get("oi", ce.get("open_interest", ce.get("openInterest", 0))),
+                "CE_LTP": ce.get("last_price", ce.get("ltp", ce.get("close", 0))),
+                "CE_IV": ce.get("implied_volatility", ce.get("iv", ce.get("impliedVolatility", 0))),
+                "CE_Delta": ce.get("greeks", {}).get("delta", ce.get("delta", 0)) if isinstance(ce.get("greeks"), dict) else ce.get("delta", 0),
+                "PE_OI": pe.get("oi", pe.get("open_interest", pe.get("openInterest", 0))),
+                "PE_LTP": pe.get("last_price", pe.get("ltp", pe.get("close", 0))),
+                "PE_IV": pe.get("implied_volatility", pe.get("iv", pe.get("impliedVolatility", 0))),
+                "PE_Delta": pe.get("greeks", {}).get("delta", pe.get("delta", 0)) if isinstance(pe.get("greeks"), dict) else pe.get("delta", 0)
+            })
 
         df = pd.DataFrame(rows)
-        logger.info(f"Successfully normalized columns: {df.columns.tolist()} | Total strikes parsed: {len(df)}")
+        
+        if df.empty:
+            logger.error("Extracted payload contained no valid strike rows.")
+            return pd.DataFrame()
+            
+        logger.info(f"Successfully processed {len(df)} strike rows.")
         return df.sort_values(by="Strike").reset_index(drop=True)
