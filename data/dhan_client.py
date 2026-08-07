@@ -1,4 +1,5 @@
 import time
+import json
 import pandas as pd
 import dhanhq
 import inspect
@@ -52,10 +53,10 @@ class DhanMarketData:
                     expiry=expiry_date
                 )
                 
-                # --- STRICT DIAGNOSTIC LOGGING ---
-                logger.info("========== FULL RESPONSE ==========")
-                logger.info(response)
-                logger.info("========== DATA ==========")
+                # --- NON-TRUNCATED JSON LOGGING ---
+                logger.info("========== FULL RESPONSE (JSON) ==========")
+                logger.info(json.dumps(response, indent=2, default=str))
+                logger.info("==========================================")
                 
                 if not response or response.get("status") != "success":
                     logger.error(f"Option Chain API Failed. Response: {response}")
@@ -63,16 +64,12 @@ class DhanMarketData:
                     continue
                 
                 data = response.get("data")
-                logger.info(f"Type(data): {type(data)}")
-                logger.info(f"Data Object: {data}")
-                
-                if isinstance(data, dict):
-                    logger.info(f"Data Keys: {list(data.keys())}")
-                
                 if data is None:
                     raise ValueError("Response contains no 'data' field")
-                if not data:
-                    raise ValueError(f"Empty data returned by Dhan: {response}")
+                
+                logger.info(f"Data type: {type(data)}")
+                if isinstance(data, dict):
+                    logger.info(f"Top-level data keys: {list(data.keys())}")
 
                 ltp = response.get("last_price", data.get("last_price", 0) if isinstance(data, dict) else 0)
                 return ltp, data
@@ -86,27 +83,19 @@ class DhanMarketData:
 
     def process_oc_to_dataframe(self, data):
         """
-        Processes the extracted 'data' object directly. 
-        Will be refined once the exact printed object structure appears in logs.
+        Parses the official Dhan response['data'] structure containing 'oc' and 'last_price'.
         """
-        if not data:
-            logger.error("process_oc_to_dataframe received empty data.")
+        if not data or not isinstance(data, dict):
+            logger.error("process_oc_to_dataframe received invalid data object.")
             return pd.DataFrame()
 
-        # Handle double-wrapped data if Dhan nests it again
-        if isinstance(data, dict) and "data" in data and isinstance(data["data"], (dict, list)):
-            logger.warning("Detected double-nested 'data' field. Unpacking...")
-            data = data["data"]
-
-        # Support if 'oc' key holds the dictionary
-        payload = data
-        if isinstance(data, dict):
-            if "oc" in data:
-                payload = data["oc"]
-            elif "records" in data:
-                payload = data["records"]
-            elif "optionChain" in data:
-                payload = data["optionChain"]
+        # Target the official 'oc' container explicitly, fallback to data if missing
+        payload = data.get("oc", data)
+        
+        logger.info(f"Payload type: {type(payload)}")
+        if isinstance(payload, dict):
+            logger.info(f"Payload keys count: {len(payload)}")
+            logger.info(f"Sample Payload keys: {list(payload.keys())[:5]}")
 
         rows = []
 
@@ -154,11 +143,13 @@ class DhanMarketData:
                     "PE_Delta": pe.get("greeks", {}).get("delta", pe.get("delta", 0)) if isinstance(pe.get("greeks"), dict) else pe.get("delta", 0)
                 })
 
-        df = pd.DataFrame(rows)
-        
-        if df.empty:
-            logger.error("Parsing produced an empty DataFrame. Inspect the 'Data Object' log above.")
+        # Fail fast with diagnostic logs if no option rows are found
+        if not rows:
+            logger.error(f"No option records found. Payload type={type(payload)}")
+            if isinstance(payload, dict):
+                logger.error(f"Payload keys={list(payload.keys())[:10]}")
             return pd.DataFrame()
-            
-        logger.info(f"Successfully normalized columns: {df.columns.tolist()}")
+
+        df = pd.DataFrame(rows)
+        logger.info(f"Successfully normalized columns: {df.columns.tolist()} | Total strikes parsed: {len(df)}")
         return df.sort_values(by="Strike").reset_index(drop=True)
