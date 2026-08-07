@@ -63,3 +63,49 @@ def analyze_smart_money(current_price, prev_price, current_oi, prev_oi, current_
         "flow": flow, "flow_score": f_score, "flow_color": f_color,
         "divergence": divergence, "div_score": d_score, "div_color": d_color
     }
+from typing import Dict, Any
+
+def analyze_smart_money(
+    current_price: float, 
+    prev_price: float, 
+    features: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Computes a continuous 0-100 Flow Score driven by OI velocity, volume velocity,
+    price momentum, and premium expansion.
+    """
+    spot_vel = features.get("spot_velocity", 0.0)
+    oi_accel = features.get("oi_acceleration", 0.0)
+    vol_vel = features.get("volume_velocity", 0.0)
+    prem_exp = features.get("premium_expansion", 0.0)
+
+    # Data-driven score calculation (Normalized 0 to 100)
+    raw_score = 50.0 + (spot_vel * 0.5) + (oi_accel / 100000.0) + (vol_vel / 500000.0) + (prem_exp * 2.0)
+    flow_score = float(max(0.0, min(100.0, raw_score)))
+
+    if flow_score >= 65.0:
+        flow, flow_color = "Institutional Accumulation (Long)", "#00E676"
+    elif flow_score <= 35.0:
+        flow, flow_color = "Institutional Distribution (Short)", "#FF3D00"
+    else:
+        flow, flow_color = "Neutral / Two-Way Flow", "#FFC107"
+
+    # Divergence Engine integration
+    iv_vel = features.get("iv_velocity", 0.0)
+    if spot_vel > 0 and iv_vel < -0.2:
+        divergence = "IV Crush / Capped Upside"
+        div_color = "#FFC107"
+    elif spot_vel < 0 and iv_vel > 0.2:
+        divergence = "Panic Hedging / Vol Expansion"
+        div_color = "#FF3D00"
+    else:
+        divergence = "No Structural Divergence"
+        div_color = "#888"
+
+    return {
+        "flow": flow,
+        "flow_score": flow_score,
+        "flow_color": flow_color,
+        "divergence": divergence,
+        "div_color": div_color
+    }
