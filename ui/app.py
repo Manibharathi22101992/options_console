@@ -5,7 +5,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
 import time
-import datetime
+from datetime import datetime, timedelta
 from data.dhan_client import DhanMarketData
 from analytics.signals import analyze_market
 from ui.components import render_gauge_chart, render_oi_heatmap
@@ -28,17 +28,21 @@ if 'db_initialized' not in st.session_state:
     st.session_state.db_initialized = True
 
 @st.cache_resource
-def get_dhan_client_v7():
+def get_dhan_client_v8():
     return DhanMarketData()
 
-client = get_dhan_client_v7()
+client = get_dhan_client_v8()
 
-# --- PROFESSIONAL UI SIDEBAR ---
+# --- PROFESSIONAL UI SIDEBAR (IST AWARE) ---
 st.sidebar.title("⚙️ Engine Controls")
 st.sidebar.markdown("---")
 
-today = datetime.date.today()
-next_tuesday = today + datetime.timedelta((1 - today.weekday()) % 7)
+# Force calculation based on Indian Standard Time (IST = UTC + 5:30)
+ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
+today_ist = ist_now.date()
+
+# Auto-calculate next upcoming Tuesday based on IST date
+next_tuesday = today_ist + timedelta((1 - today_ist.weekday()) % 7)
 expiry_input = st.sidebar.text_input("Target Expiry Date (YYYY-MM-DD)", value=next_tuesday.strftime("%Y-%m-%d"))
 
 st.sidebar.markdown("---")
@@ -52,6 +56,8 @@ else:
 
 # --- DASHBOARD UI ---
 st.title("⚡ Quantitative Options Engine")
+st.caption(f"Server Time (IST): {ist_now.strftime('%Y-%m-%d %H:%M:%S')} | Target Expiry: {expiry_input}")
+
 placeholder = st.empty()
 
 with placeholder.container():
@@ -63,9 +69,8 @@ with placeholder.container():
         
     df = client.process_oc_to_dataframe(oc_raw)
     
-    # UI Protection Guard
     if df.empty:
-        st.error("No option chain data available or structure mismatch during closed hours.")
+        st.error("No option chain data available or structure mismatch.")
         st.stop()
         
     if ltp == 0:
